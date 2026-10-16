@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Numerics;
 using System.Text;
 using Eco.Core;
 using Eco.Core.Plugins;
@@ -14,8 +15,9 @@ namespace EcoSimCitizens
     ///   /ecosim                 status popup for the caller
     ///   /ecosim report          full daily report to the caller
     ///   /ecosim list            list all citizens
-    ///   /ecosim spawn &lt;name&gt; &lt;profession&gt;   (admin)
-    ///   /ecosim remove &lt;name&gt;            (admin)
+    ///   /ecosim professions     list the real in-game professions
+    ///   /ecosim spawn &lt;name&gt; &lt;profession&gt;   (admin, creates a real world NPC)
+    ///   /ecosim remove &lt;name&gt;            (admin, despawns the NPC too)
     ///   /ecosim give &lt;name&gt; &lt;amount&gt;     (admin)
     ///   /ecosim home &lt;name&gt; &lt;deed&gt;       (admin)
     ///   /ecosim save                   (admin)
@@ -62,7 +64,20 @@ namespace EcoSimCitizens
             user.MsgLocStr(sb.ToString(), NotificationStyle.Info);
         }
 
-        [ChatSubCommand("ecosim", "Spawn a new citizen. Professions: Laborer, Farmer, Miner, Crafter, Merchant, Builder, Scholar.", "spawn", ChatAuthorizationLevel.Admin)]
+        [ChatSubCommand("ecosim", "List the real in-game professions available to citizens", "professions", ChatAuthorizationLevel.User)]
+        public static void ListProfessions(User user)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("Real Eco professions (root skills from Skill.AllSkills):");
+            foreach (var id in Professions.RealSkillIds.OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
+            {
+                var e = Professions.Get(id);
+                sb.AppendLine($"  {id} - {e.Focus} (productivity {e.Productivity:0.0}, earnings x{e.EarnMultiplier:0.0})");
+            }
+            user.MsgLocStr(sb.ToString(), NotificationStyle.Info);
+        }
+
+        [ChatSubCommand("ecosim", "Spawn a new citizen. Use /ecosim professions for the real profession list.", "spawn", ChatAuthorizationLevel.Admin)]
         public static void Spawn(User user, string name, string profession)
         {
             var sim = Plugin;
@@ -99,23 +114,36 @@ namespace EcoSimCitizens
             }
 
             db.Save();
-            user.MsgLocStr($"Citizen '{name}' ({citizen.Profession}, {citizen.Trait}) joined the simulation.", NotificationStyle.Info);
-            PluginLog.Info($"Spawned citizen {name} ({citizen.Profession}/{citizen.Trait})");
+
+            CitizenNpc npc = null;
+            try { npc = NpcManager.Spawn(citizen, user, GetPlayerPosition(user)); }
+            catch (Exception ex) { PluginLog.Warn("NPC spawn failed: " + ex.Message); }
+
+            if (npc != null)
+            {
+                user.MsgLocStr($"Citizen '{name}' ({citizen.Profession}, {citizen.Trait}) is now a real NPC in the world.", NotificationStyle.Info);
+            }
+            else
+            {
+                user.MsgLocStr($"Citizen '{name}' ({citizen.Profession}, {citizen.Trait}) joined the simulation (world NPC unavailable, see logs).", NotificationStyle.Info);
+            }
+            PluginLog.Info($"Spawned citizen {name} ({citizen.Profession}/{citizen.Trait}) npc={npc != null}");
         }
 
         [ChatSubCommand("ecosim", "Remove a citizen", "remove", ChatAuthorizationLevel.Admin)]
         public static void Remove(User user, string name)
         {
             var db = Plugin.Database;
-            if (db.Remove(name))
-            {
-                db.Save();
-                user.MsgLocStr($"Citizen '{name}' removed.", NotificationStyle.Info);
-            }
-            else
+            var c = db.Find(name);
+            if (c == null)
             {
                 user.MsgLocStr($"No citizen named '{name}'.", NotificationStyle.Error);
+                return;
             }
+            NpcManager.DestroyFor(c);
+            db.Remove(name);
+            db.Save();
+            user.MsgLocStr($"Citizen '{name}' removed (world NPC despawned).", NotificationStyle.Info);
         }
 
         [ChatSubCommand("ecosim", "Credit a citizen's ledger", "give", ChatAuthorizationLevel.Admin)]
@@ -178,6 +206,20 @@ namespace EcoSimCitizens
             var traits = Traits.AllIds.ToArray();
             int index = Math.Abs(seed.GetHashCode()) % traits.Length;
             return traits[index];
+        }
+
+        /// <summary>Spawn anchor for new NPCs (world spawn point, valid and always reachable).</summary>
+        private static Vector3 GetPlayerPosition(User user)
+        {
+            try
+            {
+                if (user != null) return UserManager.GetOrRelocateSpawnPosition();
+            }
+            catch (Exception ex)
+            {
+                PluginLog.Warn("GetPlayerPosition failed: " + ex.Message);
+            }
+            return Vector3.Zero;
         }
     }
 }

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Eco.Gameplay.Players;
 using Eco.Gameplay.Settlements;
 using Eco.Shared.Services;
@@ -60,8 +61,23 @@ namespace EcoSimCitizens
             c.TicksWorked++;
             c.LedgerBalance += cfg.WagePerTick * prof.EarnMultiplier * traitWork;
 
-            // --- consume: buy food from the real market if affordable ---
-            if (market.HasMarket && market.FoodOfferCount > 0 && market.MinPrice > 0)
+            // --- consume: real NPCs spend real in-game money; fallback to market index ---
+            var npc = NpcManager.Find(c.Name);
+            if (npc != null)
+            {
+                npc.BehaviorTick(c);
+                if (!c.HasBeenFunded)
+                {
+                    CitizenEconomy.GrantStartFunds(c.Name, (float)cfg.StartingBalance);
+                    c.HasBeenFunded = true;
+                }
+                if (c.Calories < 65 && CitizenEconomy.TryBuyCheapestFood(c.Name, out float spent))
+                {
+                    c.Calories = SimMath.Clamp(c.Calories + cfg.CalorieGainFromFood, 0, 100);
+                    c.LedgerBalance -= spent;
+                }
+            }
+            else if (market.HasMarket && market.FoodOfferCount > 0 && market.MinPrice > 0)
             {
                 double cost = market.MinPrice * cfg.FoodSpendFactor;
                 if (c.LedgerBalance >= cost)
@@ -130,7 +146,9 @@ namespace EcoSimCitizens
 
             var sb = new System.Text.StringBuilder();
             sb.AppendLine("=== EcoSim Citizens Report ===");
-            sb.AppendLine($"Population: {db.Count} citizens | Real residents: {v.RealPlayerCount} | Day {Eco.Shared.Time.TimeUtil.Days:0.0}");
+            int npcCount = 0;
+            try { npcCount = NpcManager.GetAll().Count(); } catch { }
+            sb.AppendLine($"Population: {db.Count} citizens | Real residents: {v.RealPlayerCount} | World NPCs: {npcCount} | Day {Eco.Shared.Time.TimeUtil.Days:0.0}");
 
             if (m.HasMarket)
             {

@@ -6,11 +6,12 @@
     <Nullable>disable</Nullable>
     <AssemblyName>EcoSimCitizens</AssemblyName>
     <RootNamespace>EcoSimCitizens</RootNamespace>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
     <EnableDefaultItems>true</EnableDefaultItems>
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>

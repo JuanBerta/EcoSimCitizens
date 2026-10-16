@@ -30,6 +30,7 @@ namespace EcoSimCitizens
 
         public CitizensDatabase Database => _database;
         public SimulationCore Simulation => _simulation;
+        public static EcoSimCitizens Instance { get; private set; }
 
         public string GetCategory() => "EcoSim Citizens";
 
@@ -39,7 +40,9 @@ namespace EcoSimCitizens
             string happiness = count > 0 && _simulation != null
                 ? $"avg happiness {_simulation.AverageHappiness(_database.Snapshot()):0.0}"
                 : "no citizens yet";
-            return $"{count} citizens, {happiness}, next tick in {Math.Max(0, ModConfig.Instance.TickIntervalMinutes - (DateTime.UtcNow - _lastTickUtc).TotalMinutes):0.0} min";
+            int npcs = 0;
+            try { npcs = NpcManager.GetAll().Count(); } catch { }
+            return $"{count} citizens, {happiness}, {npcs} npcs in world, next tick in {Math.Max(0, ModConfig.Instance.TickIntervalMinutes - (DateTime.UtcNow - _lastTickUtc).TotalMinutes):0.0} min";
         }
 
         /// <summary>Called periodically by Eco's plugin thread.</summary>
@@ -52,9 +55,11 @@ namespace EcoSimCitizens
                     if (!_initialized)
                     {
                         _initialized = true;
+                        Instance = this;
                         ModConfig.Instance.Load();
                         _database.Load();
                         _simulation = new SimulationCore();
+                        Professions.LoadRealSkills();
                         _lastTickUtc = DateTime.UtcNow;
                         PluginLog.Info($"Initialized. Citizens loaded: {_database.Count}");
                     }
