@@ -1,0 +1,13 @@
+# Build output
+bin/
+obj/
+*.user
+
+# IDE
+.vs/
+.vscode/
+.idea/
+
+# Eco mod runtime state (generated on the server, never committed)
+EcoSimCitizens/config.json
+EcoSimCitizens/citizens.json
