@@ -201,6 +201,77 @@ namespace EcoSimCitizens
             user.MsgLocStr(sb.ToString(), NotificationStyle.Info);
         }
 
+        [ChatSubCommand("ecosim", "Detailed citizen overview (skills, production, life stage, civics)", "citizens", ChatAuthorizationLevel.User)]
+        public static void CitizensOverview(User user)
+        {
+            var db = Plugin.Database;
+            var sb = new StringBuilder();
+            sb.AppendLine($"Citizens ({db.Count}):");
+            foreach (var c in db.Snapshot().OrderBy(c => c.Name))
+            {
+                string stage = c.LifeStage;
+                string skills = $"{CitizenSkills.GetLevel(c)}/{SimulationLogic.MaxLevel}";
+                sb.AppendLine($"  {c.Name} [{c.Profession}/{c.Trait}]");
+                sb.AppendLine($"    happiness {c.Happiness:0.0} | skill lvl {skills} | produced {c.ItemsProduced} sold {c.ItemsSold} | earn {c.RealEarned:0.00}");
+                sb.AppendLine($"    phase {c.CurrentPhase} | stage {stage} | age {c.AgeYears:0.0}y | home {(string.IsNullOrEmpty(c.SettlementName) ? (c.HasHome ? c.HomeDeedName : "-") : c.SettlementName)}");
+            }
+            user.MsgLocStr(sb.ToString(), NotificationStyle.Info);
+        }
+
+        [ChatSubCommand("ecosim", "Full profile of one citizen", "info", ChatAuthorizationLevel.User)]
+        public static void Info(User user, string name)
+        {
+            var c = Plugin.Database.Find(name);
+            if (c == null)
+            {
+                user.MsgLocStr($"No citizen named '{name}'.", NotificationStyle.Error);
+                return;
+            }
+            var sb = new StringBuilder();
+            sb.AppendLine($"== {c.Name} ==");
+            sb.AppendLine($"Profession: {c.Profession} | Trait: {c.Trait} | Life stage: {c.LifeStage} | Age: {c.AgeYears:0.0}y");
+            sb.AppendLine($"Happiness: {c.Happiness:0.0}/100 | Calories: {c.Calories:0.0} | Comfort: {c.Comfort:0.0} | Social: {c.Social:0.0}");
+            sb.AppendLine($"Phase: {c.CurrentPhase} | Sleeping: {c.IsSleeping} | AgeInTicks: {c.AgeInTicks}");
+            sb.AppendLine($"Skill: {c.Profession} level {CitizenSkills.GetLevel(c)} (xp {CitizenSkills.GetExperience(c):0})");
+            sb.AppendLine($"Work: {(c.HasWorkplace ? $"{c.WorkPlaceName} ({c.WorkX:0},{c.WorkY:0},{c.WorkZ:0})" : "none")} | units {c.WorkUnitsProduced}");
+            sb.AppendLine($"Production: {SimulationLogic.InventoryTotal(c.Inventory)} items held, {c.ItemsSold} sold, real earned {c.RealEarned:0.00}");
+            sb.AppendLine($"Home: {(c.HasHome ? c.HomeDeedName : "none")} | Settlement: {(string.IsNullOrEmpty(c.SettlementName) ? "-" : c.SettlementName)}");
+            sb.AppendLine($"Vote: {(c.LastVoteDay > 0 ? $"day {c.LastVoteDay:0.0} for '{c.LastVotedChoice}'" : "never")} | Legal: {c.LegalPreference}");
+            sb.AppendLine($"Death: {(c.IsAlive ? "alive" : $"day {c.DeathDay:0.0}, {c.DeathCause}")}");
+            sb.AppendLine("Recent social trail:");
+            if (c.SocialTrail == null || c.SocialTrail.Count == 0)
+            {
+                sb.AppendLine("  (nothing yet)");
+            }
+            else
+            {
+                foreach (var t in c.SocialTrail) sb.AppendLine("  - " + t);
+            }
+            user.MsgLocStr(sb.ToString(), NotificationStyle.Info);
+        }
+
+        [ChatSubCommand("ecosim", "Show one citizen's recent social trail", "trail", ChatAuthorizationLevel.User)]
+        public static void Trail(User user, string name)
+        {
+            var c = Plugin.Database.Find(name);
+            if (c == null)
+            {
+                user.MsgLocStr($"No citizen named '{name}'.", NotificationStyle.Error);
+                return;
+            }
+            var sb = new StringBuilder();
+            sb.AppendLine($"Social trail for {c.Name}:");
+            if (c.SocialTrail == null || c.SocialTrail.Count == 0)
+            {
+                sb.AppendLine("  (nothing yet)");
+            }
+            else
+            {
+                foreach (var t in c.SocialTrail) sb.AppendLine("  - " + t);
+            }
+            user.MsgLocStr(sb.ToString(), NotificationStyle.Info);
+        }
+
         private static string PickTrait(string seed)
         {
             var traits = Traits.AllIds.ToArray();

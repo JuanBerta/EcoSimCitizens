@@ -7,6 +7,9 @@ namespace EcoSimCitizens
     /// <summary>
     /// One simulated citizen. In v0.2 the citizen is also backed by a real
     /// CitizenNpc WorldObject, so it exists physically in the Eco world.
+    /// v0.3 extends the citizen with real-player traits: personal inventory,
+    /// growing skills, a workplace and commute, settlement ties, a daily
+    /// routine, a life cycle and a social trail.
     /// </summary>
     public class Citizen
     {
@@ -25,7 +28,83 @@ namespace EcoSimCitizens
         public bool HasBeenFunded { get; set; }           // real bank account funded once
         public string NpcId { get; set; }                 // optional reference to the live NPC
 
+        // --- v0.3: real-player features ---
+
+        // skill growth: per-profession experience and levels (simulated)
+        public Dictionary<string, double> SkillExperience { get; set; } = new Dictionary<string, double>();
+        public Dictionary<string, int> SkillLevels { get; set; } = new Dictionary<string, int>();
+
+        // workplace & commute
+        public string WorkPlaceName { get; set; }         // optional: name of an in-game store/deed used as workplace
+        public float WorkX { get; set; }
+        public float WorkY { get; set; }
+        public float WorkZ { get; set; }
+
+        // settlement membership (simulated tie to a real settlement)
+        public string SettlementName { get; set; }
+
+        // real inventory: real Eco item type name -> count (simulated ledger)
+        public Dictionary<string, int> Inventory { get; set; } = new Dictionary<string, int>();
+        public long ItemsProduced { get; set; }
+        public long ItemsSold { get; set; }
+        public double RealEarned { get; set; }            // currency earned by selling to real stores
+
+        // day/night routine
+        public bool IsSleeping { get; set; }
+        public string CurrentPhase { get; set; } = "Day";
+
+        // life cycle
+        public double AgeYears { get; set; } = 25.0;
+        public string LifeStage { get; set; } = "Adult";
+        public double DeathDay { get; set; } = 0;         // game day of death, 0 = alive
+        public string DeathCause { get; set; }
+
+        // civics: simulated vote record and legal preference
+        public double LastVoteDay { get; set; } = -1;     // game day of last vote
+        public string LastVotedChoice { get; set; }
+        public string LegalPreference { get; set; } = "Neutral";
+
+        // social trail: recent social events, newest last, capped by SocialTrailMax
+        public List<string> SocialTrail { get; set; } = new List<string>();
+
+        // --- v0.4: PRD modules 2-7 ---
+
+        // work parties & contracts (Module 2)
+        public string WorkPartyId { get; set; }          // id of the work party this citizen contributes to
+
+        // corporations & equity (Module 4)
+        public string CorporationId { get; set; }        // id of the corporation the citizen works for
+        public double CorporationShares { get; set; }    // equity held in that corporation
+
+        // securities & futures (Module 4)
+        public Dictionary<string, double> FuturesHeld { get; set; } = new Dictionary<string, double>(); // commodity -> units
+
+        // settlement currencies & forex (Module 5)
+        public Dictionary<string, double> CurrencyHoldings { get; set; } = new Dictionary<string, double>(); // settlement -> balance
+
+        // construction & research (Module 3)
+        public string BlueprintId { get; set; }          // active blueprint name, null = no plan
+        public double ConstructionProgress { get; set; } // 0..1
+        public bool ConstructionMaterialsSecured { get; set; }
+        public double ResearchPoints { get; set; }       // total research points contributed
+
+        // ecology & crisis (Module 6)
+        public double EnvironmentConcern { get; set; }   // 0..1 willingness to vote eco law
+        public double MeteorContribution { get; set; }   // total power/resources fed to the meteor laser
+
+        // market behaviour counters (Module 2)
+        public long TradeBuyVolume { get; set; }
+        public long TradeSellVolume { get; set; }
+
+        // contextual dialogue log (Module 7)
+        public List<string> DialogueLog { get; set; } = new List<string>();
+
+        // deterministic appearance seed for NPC spawning (Module 1)
+        public int AppearanceSeed { get; set; } = 1234;
+
         public bool HasHome => !string.IsNullOrEmpty(HomeDeedName);
+        public bool HasWorkplace => !string.IsNullOrEmpty(WorkPlaceName) || WorkX != 0 || WorkY != 0 || WorkZ != 0;
+        public bool IsAlive => DeathDay == 0;
     }
 
     /// <summary>
@@ -68,12 +147,22 @@ namespace EcoSimCitizens
                 _skillsLoaded = true;
                 try
                 {
-                    var all = Skill.AllSkills;
+                    // Reflection keeps the Eco dependency out of the JIT path: inside the
+                    // game host the assembly exists and the real skills load; in headless
+                    // tests Type.GetType simply returns null and the static fallback table
+                    // is used, so the simulation logic stays unit-testable.
+                    var skillType = Type.GetType("Eco.Gameplay.Skills.Skill, Eco.Gameplay");
+                    if (skillType == null) return;
+                    var all = skillType.GetProperty("AllSkills", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)?.GetValue(null) as IEnumerable<object>;
                     if (all == null) return;
                     foreach (var s in all)
                     {
-                        if (s == null || !s.IsRoot) continue;
-                        RealSkills[s.Name] = ResolveFromSkillName(s.Name);
+                        if (s == null) continue;
+                        var isRoot = s.GetType().GetProperty("IsRoot")?.GetValue(s) is bool b && b;
+                        if (!isRoot) continue;
+                        var name = s.GetType().GetProperty("Name")?.GetValue(s) as string;
+                        if (string.IsNullOrEmpty(name)) continue;
+                        RealSkills[name] = ResolveFromSkillName(name);
                     }
                     PluginLog.Info($"Loaded {RealSkills.Count} real Eco professions from Skill.AllSkills.");
                 }
