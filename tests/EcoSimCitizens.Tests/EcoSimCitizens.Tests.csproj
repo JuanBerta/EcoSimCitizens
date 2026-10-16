@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <RootNamespace>EcoSimCitizens.Tests</RootNamespace>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Eco.ReferenceAssemblies is a compile-time reference assembly only; it must
+         NOT be copied to the test output or the runtime refuses to load it. -->
+    <PackageReference Include="Eco.ReferenceAssemblies" Version="0.14.2-beta-release-1099" ExcludeAssets="runtime" />
+    <!-- Compile the mod sources directly into the test host so the pure logic can
+         run without the Eco game runtime. Tests never touch Eco-backed code paths. -->
+    <Compile Include="..\..\*.cs" Link="Src\%(Filename)%(Extension)" />
+  </ItemGroup>
+
+</Project>
