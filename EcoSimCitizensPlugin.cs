@@ -22,6 +22,11 @@ namespace EcoSimCitizens
     /// </summary>
     public class EcoSimCitizens : IThreadedPlugin
     {
+        static EcoSimCitizens()
+        {
+            PluginLog.Info("EcoSimCitizens build marker: V3-20261016-2338");
+        }
+
         private readonly CitizensDatabase _database = new CitizensDatabase();
         private SimulationCore _simulation;
         private DateTime _lastTickUtc;

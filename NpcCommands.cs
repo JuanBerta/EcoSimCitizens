@@ -10,7 +10,7 @@ using Eco.Shared.Services;
 namespace EcoSimCitizens
 {
     /// <summary>
-    /// PRD admin interface. New /npc command group covering agent pool limits
+    /// PRD admin interface. New /npccmd command group covering agent pool limits
     /// (Req.18), JSON telemetry (Req.20), work parties (Req.7), construction
     /// (Req.2/3), research (Req.9), corporations (Req.15), the stock exchange
     /// (Req.16), settlement currencies &amp; forex (Req.3), environment &amp; meteor
@@ -24,27 +24,27 @@ namespace EcoSimCitizens
 
         // ------------------------------------------------------------- pool (Req.18)
 
-        [ChatCommand("EcoSim NPC admin - agent pool, telemetry, companies, stock, currency, parties", "npc", ChatAuthorizationLevel.Admin)]
+        [ChatCommand("EcoSim NPC admin - agent pool, telemetry, companies, stock, currency, parties", "npccmd", ChatAuthorizationLevel.Admin)]
         public static void Npc(User user)
         {
             var sim = Plugin.Simulation;
             var sb = new StringBuilder();
-            sb.AppendLine("EcoSim /npc commands:");
-            sb.AppendLine("  /npc limit <int>          - max physical NPCs in the world");
-            sb.AppendLine("  /npc pool                  - pool + hybrid pathfinding stats");
-            sb.AppendLine("  /npc stats [settlement]    - JSON telemetry");
-            sb.AppendLine("  /npc company create <name> <capital> | list | issue <corp> <name> <shares> | vote <corp> <choice> | resolve <corp> | hire <corp> <citizen> <wage> | dividends <corp> <amount>");
-            sb.AppendLine("  /npc stock list | addfuture <commodity> <base> | buy <citizen> <commodity>");
-            sb.AppendLine("  /npc currency list | mint <settlement> <symbol> <reserve> | rate <from> <to> | convert <citizen> <from> <to> <amount>");
-            sb.AppendLine("  /npc party create <name> <task> <pool> <target> | list | join <citizen> <party> | leave <citizen>");
-            sb.AppendLine("  /npc build list | status <citizen> | plan <citizen>");
-            sb.AppendLine("  /npc research status");
-            sb.AppendLine("  /npc env get | set <pollution> <co2> <soil> | cleanup <amount> | meteor <power> <resources> | impact <day>");
-            sb.AppendLine("  /npc dialogue <citizen>");
+            sb.AppendLine("EcoSim /npccmd commands:");
+            sb.AppendLine("  /npccmd limit <int>          - max physical NPCs in the world");
+            sb.AppendLine("  /npccmd pool                  - pool + hybrid pathfinding stats");
+            sb.AppendLine("  /npccmd stats [settlement]    - JSON telemetry");
+            sb.AppendLine("  /npccmd company create <name> <capital> | list | issue <corp> <name> <shares> | vote <corp> <choice> | resolve <corp> | hire <corp> <citizen> <wage> | dividends <corp> <amount>");
+            sb.AppendLine("  /npccmd stock list | addfuture <commodity> <base> | buy <citizen> <commodity>");
+            sb.AppendLine("  /npccmd currency list | mint <settlement> <symbol> <reserve> | rate <from> <to> | convert <citizen> <from> <to> <amount>");
+            sb.AppendLine("  /npccmd party create <name> <task> <pool> <target> | list | join <citizen> <party> | leave <citizen>");
+            sb.AppendLine("  /npccmd construct list | status <citizen> | plan <citizen>");
+            sb.AppendLine("  /npccmd research status");
+            sb.AppendLine("  /npccmd env get | set <pollution> <co2> <soil> | cleanup <amount> | meteor <power> <resources> | impact <day>");
+            sb.AppendLine("  /npccmd dialogue <citizen>");
             user.OkBoxLocStr(sb.ToString());
         }
 
-        [ChatSubCommand("npc", "Set the maximum number of physical NPC citizens", "limit", ChatAuthorizationLevel.Admin)]
+        [ChatSubCommand("npccmd", "Set the maximum number of physical NPC citizens", "limit", ChatAuthorizationLevel.Admin)]
         public static void Limit(User user, int amount)
         {
             if (amount < 0) { user.ErrorLocStr("Limit must be >= 0."); return; }
@@ -52,7 +52,7 @@ namespace EcoSimCitizens
             user.MsgLocStr($"NPC pool limit set to {amount} (currently {Plugin.Simulation.Pool.ActiveNpcCount} active).", NotificationStyle.Info);
         }
 
-        [ChatSubCommand("npc", "Show agent pool and hybrid pathfinding statistics", "pool", ChatAuthorizationLevel.Admin)]
+        [ChatSubCommand("npccmd", "Show agent pool and hybrid pathfinding statistics", "pool", ChatAuthorizationLevel.Admin)]
         public static void Pool(User user)
         {
             var pool = Plugin.Simulation.Pool;
@@ -64,7 +64,7 @@ namespace EcoSimCitizens
 
         // ------------------------------------------------------------ telemetry (Req.20)
 
-        [ChatSubCommand("npc", "JSON telemetry for the simulation (optionally scoped to a settlement)", "stats", ChatAuthorizationLevel.Admin)]
+        [ChatSubCommand("npccmd", "JSON telemetry for the simulation (optionally scoped to a settlement)", "stats", ChatAuthorizationLevel.Admin)]
         public static void Stats(User user, string settlementId = "")
         {
             var sim = Plugin;
@@ -73,15 +73,16 @@ namespace EcoSimCitizens
 
         // ------------------------------------------------------------- companies (Req.15)
 
-        [ChatSubCommand("npc", "Create a new corporation", "company", ChatAuthorizationLevel.Admin)]
-        public static void CompanyCreate(User user, string action, string name = "", double capital = 0)
+        [ChatSubCommand("npccmd", "Create a new corporation", "company", ChatAuthorizationLevel.Admin)]
+        public static void CompanyCreate(User user, string action, string name = "", float capital = 0f)
         {
             var sys = Plugin.Simulation.Corporations;
+            double cap = capital;
             if (action.Equals("create", StringComparison.OrdinalIgnoreCase))
             {
-                if (string.IsNullOrEmpty(name)) { user.ErrorLocStr("Usage: /npc company create <name> <capital>"); return; }
-                var corp = sys.Create(name, "Admin", capital);
-                user.MsgLocStr($"Corporation {corp.Name} created (id {corp.Id}, capital {capital:0.0}).", NotificationStyle.Info);
+                if (string.IsNullOrEmpty(name)) { user.ErrorLocStr("Usage: /npccmd company create <name> <capital>"); return; }
+                var corp = sys.Create(name, "Admin", cap);
+                user.MsgLocStr($"Corporation {corp.Name} created (id {corp.Id}, capital {cap:0.0}).", NotificationStyle.Info);
             }
             else if (action.Equals("list", StringComparison.OrdinalIgnoreCase))
             {
@@ -98,14 +99,14 @@ namespace EcoSimCitizens
                 var corp = sys.Find(name);
                 if (corp == null) { user.ErrorLocStr("Corporation not found."); return; }
                 // args: <corp> <owner> <shares> <price> encoded as name=corp, capital=shares, plus helper fields
-                sys.IssueShares(corp, "Admin", Math.Max(1, capital), 1.0);
+                sys.IssueShares(corp, "Admin", Math.Max(1, cap), 1.0);
                 user.MsgLocStr($"Issued shares to Admin; total now {corp.TotalShares}.", NotificationStyle.Info);
             }
             else if (action.Equals("vote", StringComparison.OrdinalIgnoreCase))
             {
                 var corp = sys.Find(name);
                 if (corp == null) { user.ErrorLocStr("Corporation not found."); return; }
-                sys.CastVote(corp, "Admin", capital > 0 ? "Growth" : "Safety");
+                sys.CastVote(corp, "Admin", cap > 0 ? "Growth" : "Safety");
                 user.MsgLocStr("Vote cast (equity weighted).", NotificationStyle.Info);
             }
             else if (action.Equals("resolve", StringComparison.OrdinalIgnoreCase))
@@ -120,7 +121,7 @@ namespace EcoSimCitizens
                 var corp = sys.Find(name);
                 if (corp == null) { user.ErrorLocStr("Corporation not found."); return; }
                 var db = Plugin.Database;
-                var c = db.Find(capital > 0 ? "Admin" : null);
+                var c = db.Find(cap > 0 ? "Admin" : null);
                 // fallback: hire the richest citizen if the name arg wasn't a citizen
                 c ??= db.Snapshot().OrderByDescending(x => x.LedgerBalance).FirstOrDefault();
                 if (c == null) { user.ErrorLocStr("No citizen to hire."); return; }
@@ -131,7 +132,7 @@ namespace EcoSimCitizens
             {
                 var corp = sys.Find(name);
                 if (corp == null) { user.ErrorLocStr("Corporation not found."); return; }
-                sys.PayDividends(corp, capital);
+                sys.PayDividends(corp, cap);
                 user.MsgLocStr($"Dividend pool now {corp.DividendPool:0.0}.", NotificationStyle.Info);
             }
             else
@@ -142,22 +143,23 @@ namespace EcoSimCitizens
 
         // ---------------------------------------------------------- stock exchange (Req.16)
 
-        [ChatSubCommand("npc", "Stock exchange: list, add futures, buy", "stock", ChatAuthorizationLevel.Admin)]
-        public static void Stock(User user, string action, string name = "", double amount = 0)
+        [ChatSubCommand("npccmd", "Stock exchange: list, add futures, buy", "stock", ChatAuthorizationLevel.Admin)]
+        public static void Stock(User user, string action, string name = "", float amount = 0f)
         {
             var ex = Plugin.Simulation.Exchange;
+            double amt = amount;
             if (action.Equals("list", StringComparison.OrdinalIgnoreCase))
             {
                 var sb = new StringBuilder();
                 foreach (var l in ex.Listings) sb.AppendLine($"{l.Name}: {l.LastPrice:0.00}/share ({l.Shares} shares)");
                 foreach (var f in ex.Futures) sb.AppendLine($"Future {f.Commodity}: {f.LastPrice:0.00} (base {f.BasePrice:0.00}, supply {f.Supply:0.0}, demand {f.Demand:0.0})");
-                if (ex.Listings.Count == 0 && ex.Futures.Count == 0) sb.AppendLine("(exchange empty - /npc stock addfuture <commodity> <base>)");
+                if (ex.Listings.Count == 0 && ex.Futures.Count == 0) sb.AppendLine("(exchange empty - /npccmd stock addfuture <commodity> <base>)");
                 user.MsgLocStr(sb.ToString(), NotificationStyle.Info);
             }
             else if (action.Equals("addfuture", StringComparison.OrdinalIgnoreCase))
             {
-                if (string.IsNullOrEmpty(name)) { user.ErrorLocStr("Usage: /npc stock addfuture <commodity> <base>"); return; }
-                var f = ex.AddFuture(name, amount > 0 ? amount : 10.0);
+                if (string.IsNullOrEmpty(name)) { user.ErrorLocStr("Usage: /npccmd stock addfuture <commodity> <base>"); return; }
+                var f = ex.AddFuture(name, amt > 0 ? amt : 10.0);
                 user.MsgLocStr($"Future contract {f.Id} added for {f.Commodity}.", NotificationStyle.Info);
             }
             else if (action.Equals("buy", StringComparison.OrdinalIgnoreCase))
@@ -177,10 +179,11 @@ namespace EcoSimCitizens
 
         // --------------------------------------------------------------- currency (Req.3)
 
-        [ChatSubCommand("npc", "Settlement currencies and forex", "currency", ChatAuthorizationLevel.Admin)]
-        public static void Currency(User user, string action, string name = "", string symbol = "", double amount = 0)
+        [ChatSubCommand("npccmd", "Settlement currencies and forex", "currency", ChatAuthorizationLevel.Admin)]
+        public static void Currency(User user, string action, string name = "", string symbol = "", float amount = 0f)
         {
             var cs = Plugin.Simulation.Currencies;
+            double amt = amount;
             if (action.Equals("list", StringComparison.OrdinalIgnoreCase))
             {
                 var sb = new StringBuilder();
@@ -193,7 +196,7 @@ namespace EcoSimCitizens
             }
             else if (action.Equals("mint", StringComparison.OrdinalIgnoreCase))
             {
-                var cur = cs.Mint(name, symbol, amount > 0 ? amount : 100);
+                var cur = cs.Mint(name, symbol, amt > 0 ? amt : 100);
                 user.MsgLocStr($"Minted {cur.Symbol} for {cur.SettlementName} (reserve {cur.BackingReserve:0.0}).", NotificationStyle.Info);
             }
             else if (action.Equals("rate", StringComparison.OrdinalIgnoreCase))
@@ -209,7 +212,7 @@ namespace EcoSimCitizens
                 var db = Plugin.Database;
                 var c = db.Find(name);
                 if (c == null) { user.ErrorLocStr("Citizen not found."); return; }
-                bool ok = cs.Convert(c, name, symbol, amount);
+                bool ok = cs.Convert(c, name, symbol, amt);
                 user.MsgLocStr(ok ? "Converted." : "Conversion failed (missing funds or currencies).", NotificationStyle.Info);
             }
             else
@@ -220,13 +223,14 @@ namespace EcoSimCitizens
 
         // ------------------------------------------------------------- work parties (Req.7)
 
-        [ChatSubCommand("npc", "Work parties and contracts", "party", ChatAuthorizationLevel.Admin)]
-        public static void Party(User user, string action, string name = "", string task = "", double amount = 0)
+        [ChatSubCommand("npccmd", "Work parties and contracts", "party", ChatAuthorizationLevel.Admin)]
+        public static void Party(User user, string action, string name = "", string task = "", float amount = 0f)
         {
             var sys = Plugin.Simulation.WorkParties;
+            double amt = amount;
             if (action.Equals("create", StringComparison.OrdinalIgnoreCase))
             {
-                var p = sys.CreateParty(name, string.IsNullOrEmpty(task) ? "General" : task, amount > 0 ? amount : 100, 50);
+                var p = sys.CreateParty(name, string.IsNullOrEmpty(task) ? "General" : task, amt > 0 ? amt : 100, 50);
                 user.MsgLocStr($"Work party {p.Name} created (id {p.Id}).", NotificationStyle.Info);
             }
             else if (action.Equals("list", StringComparison.OrdinalIgnoreCase))
@@ -263,8 +267,8 @@ namespace EcoSimCitizens
 
         // ------------------------------------------------------------ construction (Req.2/3)
 
-        [ChatSubCommand("npc", "Construction plans", "build", ChatAuthorizationLevel.Admin)]
-        public static void Build(User user, string action, string name = "")
+        [ChatSubCommand("npccmd", "Construction plans", "construct", ChatAuthorizationLevel.Admin)]
+        public static void ConstructionManage(User user, string action, string name = "")
         {
             var sim = Plugin.Simulation;
             if (action.Equals("list", StringComparison.OrdinalIgnoreCase))
@@ -301,7 +305,7 @@ namespace EcoSimCitizens
 
         // ------------------------------------------------------------- research (Req.9)
 
-        [ChatSubCommand("npc", "Research hubs", "research", ChatAuthorizationLevel.Admin)]
+        [ChatSubCommand("npccmd", "Research hubs", "research", ChatAuthorizationLevel.Admin)]
         public static void Research(User user)
         {
             var r = Plugin.Simulation.Research;
@@ -317,10 +321,12 @@ namespace EcoSimCitizens
 
         // -------------------------------------------------------- environment & meteor (Req.5/17)
 
-        [ChatSubCommand("npc", "Environment and meteor crisis management", "env", ChatAuthorizationLevel.Admin)]
-        public static void Env(User user, string action, string name = "", double amount = 0, double amount2 = 0)
+        [ChatSubCommand("npccmd", "Environment and meteor crisis management", "env", ChatAuthorizationLevel.Admin)]
+        public static void Env(User user, string action, string name = "", float amount = 0f, float amount2 = 0f)
         {
             var env = Plugin.Simulation.Environment;
+            double amt = amount;
+            double amt2 = amount2;
             if (action.Equals("get", StringComparison.OrdinalIgnoreCase))
             {
                 user.MsgLocStr(
@@ -330,24 +336,24 @@ namespace EcoSimCitizens
             }
             else if (action.Equals("set", StringComparison.OrdinalIgnoreCase))
             {
-                env.Pollution = amount;
-                env.CO2 = amount2;
+                env.Pollution = amt;
+                env.CO2 = amt2;
                 env.SoilDegradation = name.Length > 0 ? double.Parse(name) : 0;
                 user.MsgLocStr("Environment values updated.", NotificationStyle.Info);
             }
             else if (action.Equals("cleanup", StringComparison.OrdinalIgnoreCase))
             {
-                env.DoCleanup(amount);
+                env.DoCleanup(amt);
                 user.MsgLocStr($"Cleanup applied, pollution now {env.Pollution:0.0}.", NotificationStyle.Info);
             }
             else if (action.Equals("meteor", StringComparison.OrdinalIgnoreCase))
             {
-                bool done = env.ContributeToMeteorDefence(amount, amount2, 100);
+                bool done = env.ContributeToMeteorDefence(amt, amt2, 100);
                 user.MsgLocStr(done ? "Meteor laser fully charged!" : $"Meteor progress now {env.MeteorProgress:0.000}.", NotificationStyle.Info);
             }
             else if (action.Equals("impact", StringComparison.OrdinalIgnoreCase))
             {
-                env.ImpactDay = amount;
+                env.ImpactDay = amt;
                 user.MsgLocStr($"Impact day set to {env.ImpactDay:0.0}.", NotificationStyle.Info);
             }
             else
@@ -358,7 +364,7 @@ namespace EcoSimCitizens
 
         // ------------------------------------------------------------ dialogue (Req.19)
 
-        [ChatSubCommand("npc", "Show a citizen's recent dialogue", "dialogue", ChatAuthorizationLevel.Admin)]
+        [ChatSubCommand("npccmd", "Show a citizen's recent dialogue", "dialogue", ChatAuthorizationLevel.Admin)]
         public static void Dialogue(User user, string name)
         {
             var c = Plugin.Database.Find(name);
