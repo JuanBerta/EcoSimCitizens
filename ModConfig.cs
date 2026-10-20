@@ -78,6 +78,14 @@ namespace EcoSimCitizens
         // --- v0.4: settlement currencies & forex (Module 5) ---
         public bool CurrencyEnabled { get; set; } = true;
 
+        // --- v0.5: simulated NPC shop economy (mod-internal settlement) ---
+        public bool SimShopsEnabled { get; set; } = true;
+        public int SimShopMaxPerOwner { get; set; } = 2;
+        public double SimShopBaseMargin { get; set; } = 0.25;
+        public double ShopOpenCost { get; set; } = 30.0;
+        public double ShopUpgradeCost { get; set; } = 50.0;
+        public double SaveThrottleSeconds { get; set; } = 30.0;
+
         // --- v0.4: ecology & crisis management (Module 6) ---
         public bool EnvironmentEnabled { get; set; } = true;
         public double EnvironmentThreshold { get; set; } = 60.0;
@@ -103,8 +111,12 @@ namespace EcoSimCitizens
             {
                 try
                 {
+                    // Live directly next to the mod DLL: the old bug nested an
+                    // extra "EcoSimCitizens" folder (Mods/EcoSimCitizens/EcoSimCitizens/config.json)
+                    // which could confuse the mod loader and split config across
+                    // two locations. Same fix as CitizensDatabase.StatePath.
                     string dir = Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
-                    return Path.Combine(dir, "EcoSimCitizens", "config.json");
+                    return string.IsNullOrEmpty(dir) ? null : Path.Combine(dir, "config.json");
                 }
                 catch
                 {

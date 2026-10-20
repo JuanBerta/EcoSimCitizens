@@ -1,5 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.Numerics;
+using Eco.Gameplay.Components;
+using Eco.Gameplay.Components.Storage;
 using Eco.Gameplay.Objects;
 using Eco.Gameplay.Players;
 using Eco.Shared.Localization;
@@ -17,6 +20,8 @@ namespace EcoSimCitizens
     /// shows the citizen's name, life stage and profession.
     /// </summary>
     [Serialized]
+    [RequireComponent(typeof(MinimapComponent))]
+    [RequireComponent(typeof(PublicStorageComponent))]
     public class CitizenNpc : WorldObject
     {
         [Serialized] public string CitizenName;
@@ -31,12 +36,41 @@ namespace EcoSimCitizens
         [Serialized] public float LastY;
         [Serialized] public float LastZ;
         [Serialized] public float NextWanderUtc;
+        [Serialized] public float NextActionUtc;
         [Serialized] public string Headline;
+
+        // --- v0.5 independent goal system: each NPC has its own target ---
+        [Serialized] public string GoalType;   // Home / Work / Shop / Social / Wander
+        [Serialized] public float GoalX;
+        [Serialized] public float GoalY;
+        [Serialized] public float GoalZ;
+        [Serialized] public bool LastMoveFailed;
 
         private readonly Random _rng = new Random();
 
         public CitizenNpc()
         {
+        }
+
+        /// <summary>
+        /// Adds the minimap component (NPC marker on the in-game M-key map) once
+        /// the world object has finished initializing. The component auto-registers
+        /// with MinimapManager and keeps the marker position in sync with every
+        /// MoveWorldObjectTo call. Category "Citizens" groups the NPCs on the map
+        /// legend; if the component was already created by RequireComponent this
+        /// just sets its category.
+        /// </summary>
+        protected override void PostInitialize()
+        {
+            base.PostInitialize();
+            try
+            {
+                GetOrCreateComponent<MinimapComponent>()?.SetCategory(Localizer.DoStr("Citizens"));
+            }
+            catch (Exception ex)
+            {
+                PluginLog.Warn("CitizenNpc minimap setup failed: " + ex.Message);
+            }
         }
 
         /// <summary>Attaches citizen state to this world object after spawn.</summary>
@@ -54,8 +88,15 @@ namespace EcoSimCitizens
             LastY = home.Y;
             LastZ = home.Z;
             NextWanderUtc = 0;
+            GoalType = "Wander";
+            GoalX = home.X;
+            GoalY = home.Y;
+            GoalZ = home.Z;
             Headline = MakeHeadline(citizen);
             try { SetName(Headline); } catch { }
+            // v0.5 persistence: anchor the citizen to this world object's ID so a
+            // server restart can three-way reconcile citizens.json vs world NPCs.
+            try { citizen.NpcId = ID.ToString(); } catch { }
         }
 
         /// <summary>Visual name: name + life-stage suffix + profession tag.</summary>
@@ -81,50 +122,197 @@ namespace EcoSimCitizens
         }
 
         /// <summary>
-        /// Periodic per-tick behaviour driven by the simulated day/night phase:
-        /// Day - at work, Dawn/Dusk - travelling, Night - asleep at home.
-        /// Movement is guarded and only issued when the NPC is far from the target.
+        /// Decides a fresh independent goal for this NPC based on its needs and the
+        /// day/night phase. Called from the slow simulation tick; the high-frequency
+        /// movement loop only executes BehaviorTick so every NPC walks towards its
+        /// own target instead of teleporting to a shared spot.
         /// </summary>
-        public void BehaviorTick(Citizen c, SimulationLogic.DayPhase phase)
+        public void ComputeGoal(Citizen c, SimulationLogic.DayPhase phase, IList<Vector3> storePositions)
         {
-            var target = TargetFor(c, phase);
-            var last = new Vector3(LastX, LastY, LastZ);
-            if (Vector3.Distance(last, target) < 0.6f) return;
+            double now = NowUtc();
 
+            // night: always head home to sleep
+            if (phase == SimulationLogic.DayPhase.Night)
+            {
+                SetGoal("Home", HomeX, HomeY, HomeZ);
+                return;
+            }
+
+            // cooldown: keep the current goal until NextWanderUtc passes
+            if (now < NextWanderUtc) return;
+
+            // hungry: walk to the nearest store that sells food
+            if (c.Calories < 65 && storePositions != null && storePositions.Count > 0)
+            {
+                var target = NearestStore(storePositions);
+                SetGoal("Shop", target.X, target.Y, target.Z);
+                NextWanderUtc = (float)(now + 180.0 + _rng.NextDouble() * 120.0);
+                return;
+            }
+
+            // working day: commute to the workplace
+            if (phase == SimulationLogic.DayPhase.Day && HasWorkplace)
+            {
+                SetGoal("Work", JitterPoint(WorkX, WorkY, WorkZ, 3.0f));
+                NextWanderUtc = (float)(now + 240.0 + _rng.NextDouble() * 120.0);
+                return;
+            }
+
+            // lonely: socialise on the square near home
+            if (c.Social < 40)
+            {
+                SetGoal("Social", JitterPoint(HomeX, HomeY, HomeZ, 15.0f));
+                NextWanderUtc = (float)(now + 120.0 + _rng.NextDouble() * 60.0);
+                return;
+            }
+
+            // default: wander around home
+            SetGoal("Wander", JitterPoint(HomeX, HomeY, HomeZ, 25.0f));
+            NextWanderUtc = (float)(now + 60.0 + _rng.NextDouble() * 90.0);
+        }
+
+        /// <summary>
+        /// Step-wise movement towards GoalPos: moves a small fixed step (0.3~0.6 m)
+        /// each call so the client sees smooth walking instead of teleport jumps.
+        /// The high-frequency MoveLoop calls this roughly twice a second. Arrives
+        /// (distance &lt; step) it settles, tries to harvest if the goal was a gather
+        /// target, and records LastX/Y/Z. Move failures are logged once to avoid spam.
+        /// </summary>
+        public void BehaviorTick()
+        {
+            var goal = GoalPos;
+            var current = Position;
+            float dist = Vector3.Distance(current, goal);
+            float step = 0.3f + (float)(_rng.NextDouble() * 0.3f);
+
+            if (dist < step)
+            {
+                LastX = goal.X;
+                LastY = goal.Y;
+                LastZ = goal.Z;
+                LastMoveFailed = false;
+                // Arrived at a gather target: harvest the nearby resource in-place
+                // (real items into the backpack). If harvesting is still possible the
+                // routine re-targets the next resource; otherwise idle-wander resumes.
+                if (GoalType == "Gather")
+                {
+                    if (CitizenRoutine.TryHarvest(this, null, null))
+                        return; // still gathering - keep the goal until resources run out
+                }
+                // Arrived: immediately pick a fresh nearby idle goal so the NPC never
+                // stands still waiting for the slow 30-min simulation tick. The slow
+                // tick (ComputeGoal) can still override this with business goals
+                // (night home / shop / work / social) once its cooldown passes.
+                PickIdleGoal();
+                return;
+            }
+
+            var dir = Vector3.Normalize(goal - current);
+            var next = current + dir * step;
             try
             {
-                MoveWorldObjectTo(target, Quaternion.Identity);
-                LastX = target.X;
-                LastY = target.Y;
-                LastZ = target.Z;
+                MoveWorldObjectTo(next, Quaternion.Identity);
+                LastX = next.X;
+                LastY = next.Y;
+                LastZ = next.Z;
+                LastMoveFailed = false;
             }
             catch (Exception ex)
             {
-                PluginLog.Warn("CitizenNpc move failed: " + ex.Message);
+                if (!LastMoveFailed)
+                {
+                    PluginLog.Warn("CitizenNpc move failed: " + ex.Message);
+                    LastMoveFailed = true;
+                }
             }
         }
 
-        private Vector3 TargetFor(Citizen c, SimulationLogic.DayPhase phase)
+        /// <summary>
+        /// Picks a fresh idle-wander goal 15~30 m from the current position at a
+        /// random angle (Y stays at the current height). Called immediately on
+        /// arrival so NPCs keep moving between slow business-goal ticks. The short
+        /// NextWanderUtc cooldown prevents the slow tick from instantly overriding
+        /// the idle walk while still allowing night/shop/work goals to take over.
+        /// </summary>
+        private void PickIdleGoal()
         {
-            switch (phase)
+            double angle = _rng.NextDouble() * Math.PI * 2.0;
+            double radius = 15.0 + _rng.NextDouble() * 15.0; // 15..30 m
+            var cur = Position;
+            SetGoal("Wander",
+                cur.X + (float)(Math.Cos(angle) * radius),
+                cur.Y,
+                cur.Z + (float)(Math.Sin(angle) * radius));
+            NextWanderUtc = (float)(NowUtc() + 30.0 + _rng.NextDouble() * 30.0);
+        }
+
+        public Vector3 GoalPos => new Vector3(GoalX, GoalY, GoalZ);
+
+        /// <summary>
+        /// Routine actions called from the high-frequency movement loop, throttled
+        /// internally: real-resource gathering and camp-storage usage. c may be null
+        /// (the loop only has the world object at hand; ledger stats are then skipped
+        /// but real inventory actions still happen).
+        /// </summary>
+        public void RoutineTick(Citizen c, User creator)
+        {
+            double now = NowUtc();
+            if (now < NextActionUtc) return;
+            NextActionUtc = (float)(now + 30.0 + _rng.NextDouble() * 15.0);
+            try
             {
-                case SimulationLogic.DayPhase.Day:
-                    return HasWorkplace ? Jitter(WorkX, WorkY, WorkZ, 3.0f) : Jitter(HomeX, HomeY, HomeZ, 4.0f);
-                case SimulationLogic.DayPhase.Dawn:
-                case SimulationLogic.DayPhase.Dusk:
-                    // commuting: wander around home while transitioning
-                    return Jitter(HomeX, HomeY, HomeZ, 6.0f);
-                default:
-                    // night: sleeping at home
-                    return new Vector3(HomeX, HomeY, HomeZ);
+                CitizenRoutine.Perform(this, c, creator);
+            }
+            catch (Exception ex)
+            {
+                PluginLog.Warn($"{CitizenName}: RoutineTick failed: {ex.Message}");
             }
         }
 
-        private Vector3 Jitter(float x, float y, float z, float radius)
+        /// <summary>Points the NPC at a real resource to gather (day-time work).</summary>
+        public void SetGatherGoal(Vector3 pos)
+        {
+            SetGoal("Gather", pos.X, pos.Y, pos.Z);
+        }
+
+        private void SetGoal(string type, float x, float y, float z)
+        {
+            GoalType = type;
+            GoalX = x;
+            GoalY = y;
+            GoalZ = z;
+        }
+
+        private void SetGoal(string type, Vector3 pos)
+        {
+            SetGoal(type, pos.X, pos.Y, pos.Z);
+        }
+
+        private Vector3 JitterPoint(float x, float y, float z, float radius)
         {
             float jx = (float)((_rng.NextDouble() - 0.5) * 2.0 * radius);
             float jz = (float)((_rng.NextDouble() - 0.5) * 2.0 * radius);
             return new Vector3(x + jx, y, z + jz);
         }
+
+        private Vector3 NearestStore(IList<Vector3> storePositions)
+        {
+            Vector3 current = Position;
+            Vector3 best = storePositions[0];
+            float bestDist = float.MaxValue;
+            foreach (var s in storePositions)
+            {
+                float d = Vector3.Distance(current, s);
+                if (d < bestDist)
+                {
+                    bestDist = d;
+                    best = s;
+                }
+            }
+            return best;
+        }
+
+        private static double NowUtc()
+            => DateTime.UtcNow.Subtract(new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalSeconds;
     }
 }

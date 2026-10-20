@@ -181,6 +181,22 @@ namespace EcoSimCitizens
             return FallbackTable["Laborer"];
         }
 
+        /// <summary>
+        /// Guesses a profession from an NPC display name for orphan citizens created
+        /// during the three-way reconcile (no citizen record exists yet). Returns a
+        /// known FallbackTable id or "Laborer" when nothing matches.
+        /// </summary>
+        public static string FallbackFor(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return "Laborer";
+            string n = name.ToLowerInvariant();
+            foreach (var kv in FallbackTable)
+            {
+                if (n.Contains(kv.Key.ToLowerInvariant())) return kv.Key;
+            }
+            return "Laborer";
+        }
+
         public static IEnumerable<string> AllIds
         {
             get

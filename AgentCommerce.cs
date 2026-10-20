@@ -10,17 +10,19 @@ namespace EcoSimCitizens
     /// Every tick the agent compares its own production cost against the public
     /// market price for the same good. When buying is cheaper, it buys raw
     /// materials instead of making them; when producing is profitable it keeps
-    /// producing and selling. Food purchases are picked by calories-per-currency
-    /// value, not just cheapest absolute price.
+    /// producing and selling.
     ///
-    /// All money movements go through the citizen's simulated ledger (real
-    /// purchases through the live economy remain in CitizenEconomy).
+    /// Food purchases are NOT made here: the hunger branch runs earlier in
+    /// SimulationCore and settles through SimStoreManager.TryBuyFood (simulated
+    /// NPC shops, BankAccount-to-BankAccount). This module only handles raw
+    /// material procurement, which has no NPC seller and stays as a mod-internal
+    /// ledger book entry - it never touches a real StoreComponent.
     /// </summary>
     public static class AgentCommerce
     {
         /// <summary>
         /// Runs one commerce tick for a citizen. Returns true when the citizen
-        /// executed at least one buy (material or food) this tick.
+        /// executed at least one material buy this tick.
         /// </summary>
         public static bool TickCommerce(Citizen c, ModConfig cfg, MarketSnapshot market)
         {
@@ -45,29 +47,6 @@ namespace EcoSimCitizens
                         c.TradeBuyVolume += units;
                         traded = true;
                     }
-                }
-            }
-
-            // --- nutrition: pick food by calories-per-currency, not cheapest price ---
-            if (c.Calories < 65 && market.HasMarket && market.FoodOfferCount > 0 && market.MinPrice > 0)
-            {
-                double caloriesPerUnit = Math.Max(1.0, cfg.CalorieGainFromFood);
-                double bestValue = 0;
-                double bestPrice = market.MinPrice;
-                // use market min price as anchor; cheaper meals give more value per coin
-                double candidatePrice = market.MinPrice;
-                double value = SimulationLogic.CaloricValuePerCurrency(caloriesPerUnit, candidatePrice);
-                if (value > bestValue) { bestValue = value; bestPrice = candidatePrice; }
-
-                // per-tick food budget is a share of the balance; affordability is
-                // decided against the cheapest meal, not an absolute price floor
-                double budget = c.LedgerBalance * cfg.FoodSpendFactor;
-                if (budget >= bestPrice)
-                {
-                    c.LedgerBalance -= bestPrice;
-                    SimulationLogic.InventoryAdd(c.Inventory, cfg.FoodItemName, 1);
-                    c.Calories = SimMath.Clamp(c.Calories + caloriesPerUnit, 0, 100);
-                    traded = true;
                 }
             }
 

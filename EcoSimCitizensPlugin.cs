@@ -1,8 +1,15 @@
 using System;
+using System.IO;
 using System.Linq;
+using System.Numerics;
+using System.Threading;
 using System.Threading.Tasks;
 using Eco.Core.Plugins.Interfaces;
+using Eco.Core.Utils;
+using Eco.Gameplay.Components;
+using Eco.Gameplay.Objects;
 using Eco.Gameplay.Players;
+using Eco.Shared.Localization;
 using Eco.Shared.Services;
 
 namespace EcoSimCitizens
@@ -19,23 +26,91 @@ namespace EcoSimCitizens
     ///
     /// The simulation is purely observational towards Eco's own systems: it never
     /// claims land, spawns items, or touches other players' property.
+    ///
+    /// Loading: Eco 0.14's mod-kit loads DLL mods as instance plugins through the
+    /// IModKitPlugin/IServerPlugin/IInitializablePlugin interfaces (same pattern as
+    /// GoodPrice). The instance is created by the mod loader, and
+    /// Initialize(TimedTask) starts the periodic simulation loop on a background
+    /// task. Commands resolve the plugin via EcoSimCitizens.Instance. NPCs are
+    /// auto-topped-up to the AgentPoolManager.MaxActiveNpcs cap on server start
+    /// and on every simulation tick, so the world always has the configured number
+    /// of physical citizens.
     /// </summary>
-    public class EcoSimCitizens : IThreadedPlugin
+    public class EcoSimCitizens : IModKitPlugin, IServerPlugin, IInitializablePlugin, IShutdownablePlugin
     {
         static EcoSimCitizens()
         {
             PluginLog.Info("EcoSimCitizens build marker: V3-20261016-2338");
+            try
+            {
+                string dir = Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
+                if (!string.IsNullOrEmpty(dir))
+                {
+                    File.AppendAllText(Path.Combine(dir, "build_marker.log"),
+                        $"[{DateTime.Now:HH:mm:ss}] static ctor executed; Location={System.Reflection.Assembly.GetExecutingAssembly().Location}\r\n");
+                }
+            }
+            catch { }
         }
 
         private readonly CitizensDatabase _database = new CitizensDatabase();
         private SimulationCore _simulation;
         private DateTime _lastTickUtc;
-        private bool _initialized;
         private readonly object _runLock = new object();
+        private CancellationTokenSource _cts;
+        private Task _loopTask;
+        private Task _moveTask;
+        private volatile bool _started;
+
+        public static EcoSimCitizens Instance { get; private set; }
+
+        public EcoSimCitizens() { Instance = this; }
+
+        /// <summary>
+        /// File-based debug log written next to the mod DLL. The server console
+        /// (where PluginLog normally lands) is not captured by automation, so the
+        /// sim also mirrors its key lifecycle/tick lines here for log-level tests.
+        /// </summary>
+        public static void LogDebug(string message)
+        {
+            try
+            {
+                string dir = Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
+                if (string.IsNullOrEmpty(dir)) return;
+                string path = Path.Combine(dir, "debug_tick.log");
+                File.AppendAllText(path, $"[{DateTime.Now:HH:mm:ss}] {message}\r\n");
+            }
+            catch { }
+        }
 
         public CitizensDatabase Database => _database;
         public SimulationCore Simulation => _simulation;
-        public static EcoSimCitizens Instance { get; private set; }
+
+        // ------------------------------------------------------------ interfaces
+
+        public void Initialize(TimedTask timer) => StartLoop();
+
+        public Task ShutdownAsync()
+        {
+            try
+            {
+                if (_cts != null)
+                {
+                    _cts.Cancel();
+                    try { _loopTask?.Wait(TimeSpan.FromSeconds(5)); } catch { }
+                    try { _moveTask?.Wait(TimeSpan.FromSeconds(5)); } catch { }
+                }
+                SaveAll();
+                PluginLog.Info("Shutdown complete.");
+            }
+            catch (Exception ex)
+            {
+                PluginLog.Warn("Shutdown failed: " + ex.Message);
+            }
+            return Task.CompletedTask;
+        }
+
+        // ---------------------------------------------------- mod-kit status UI
 
         public string GetCategory() => "EcoSim Citizens";
 
@@ -50,59 +125,149 @@ namespace EcoSimCitizens
             return $"{count} citizens, {happiness}, {npcs} npcs in world, next tick in {Math.Max(0, ModConfig.Instance.TickIntervalMinutes - (DateTime.UtcNow - _lastTickUtc).TotalMinutes):0.0} min";
         }
 
-        /// <summary>Called periodically by Eco's plugin thread.</summary>
-        public void Run()
+        // ---------------------------------------------------------- simulation
+
+        private void StartLoop()
         {
-            try
+            if (_started) return;
+            lock (_runLock)
             {
-                lock (_runLock)
+                if (_started) return;
+                _started = true;
+                try
                 {
-                    if (!_initialized)
-                    {
-                        _initialized = true;
-                        Instance = this;
-                        ModConfig.Instance.Load();
-                        _database.Load();
-                        _simulation = new SimulationCore();
-                        Professions.LoadRealSkills();
-                        _lastTickUtc = DateTime.UtcNow;
-                        PluginLog.Info($"Initialized. Citizens loaded: {_database.Count}");
-                    }
-
-                    var cfg = ModConfig.Instance;
-                    if ((DateTime.UtcNow - _lastTickUtc).TotalMinutes >= cfg.TickIntervalMinutes)
-                    {
-                        _lastTickUtc = DateTime.UtcNow;
-                        _simulation.Tick(_database, cfg);
-                        _database.Save();
-
-                        if (cfg.BroadcastDailyReport && _database.Count > 0)
-                        {
-                            BroadcastReport();
-                        }
-                        PluginLog.Info($"Tick completed. Citizens: {_database.Count}");
-                    }
+                    LogDebug("StartLoop: begin");
+                    ModConfig.Instance.Load();
+                    LogDebug("StartLoop: config loaded");
+                    _database.Load();
+                    LogDebug($"StartLoop: database loaded ({_database.Count} citizens, {_database.SimStoreCount} stores)");
+                    _simulation = new SimulationCore();
+                    LogDebug("StartLoop: simulation core ready");
+                    Professions.LoadRealSkills();
+                    LogDebug("StartLoop: professions ready");
+                    _lastTickUtc = DateTime.UtcNow;
+                    PluginLog.Info($"Initialized. Citizens loaded: {_database.Count}");
+                    LogDebug($"Initialized. Citizens loaded: {_database.Count}");
+                    // Persisted NPCs deserialize without running PostInitialize, so their
+                    // MinimapComponent never registers with MinimapManager. Register an
+                    // unconditional pass once the world is fully loaded (runs even when
+                    // the NPC pool is already full and TopUpNpcs spawns 0).
+                    try { InitializableExtension.RunIfOrWhenInitialized(WorldObjectManager.Init, EnsureMinimapForAllNpcs); }
+                    catch (Exception ex) { PluginLog.Warn("Minimap ensure registration failed: " + ex.Message); }
+                    // Persisted NPCs also need the survival kit (backpack + camp +
+                    // workstations); same unconditional pass once the world is loaded.
+                    try { InitializableExtension.RunIfOrWhenInitialized(WorldObjectManager.Init, EnsureSurvivalKitForAllNpcs); }
+                    catch (Exception ex) { PluginLog.Warn("Survival kit ensure registration failed: " + ex.Message); }
+                    // v0.5 persistence: after the world is loaded, three-way reconcile
+                    // citizens.json vs world NPCs vs NpcId anchors (creates orphans,
+                    // back-fills anchors, clears stale ones). Runs before any top-up so
+                    // reconciled anchors stop duplicate spawns.
+                    try { InitializableExtension.RunIfOrWhenInitialized(WorldObjectManager.Init, ReconcileAfterWorldLoad); }
+                    catch (Exception ex) { PluginLog.Warn("Reconcile registration failed: " + ex.Message); }
+                    _cts = new CancellationTokenSource();
+                    _loopTask = Task.Run(() => LoopAsync(_cts.Token));
+                    _moveTask = Task.Run(() => MoveLoopAsync(_cts.Token));
+                    LogDebug("StartLoop: tasks launched");
                 }
-            }
-            catch (Exception ex)
-            {
-                PluginLog.Warn("Run failed: " + ex);
+                catch (Exception ex)
+                {
+                    // Never let an Initialize failure hang the whole server: log the
+                    // exact step and keep the plugin alive for the next attempt.
+                    LogDebug("StartLoop FAILED: " + ex);
+                    PluginLog.Warn("StartLoop failed: " + ex);
+                }
             }
         }
 
-        public Task ShutdownAsync()
+        private async Task LoopAsync(CancellationToken ct)
         {
-            try
+            // server start: top up physical NPCs to the configured cap once the world is up
+            try { TopUpNpcs(); }
+            catch (Exception ex) { PluginLog.Warn("Startup NPC top-up failed: " + ex.Message); }
+
+            while (!ct.IsCancellationRequested)
             {
-                _database.Save();
-                ModConfig.Instance.Save();
-                PluginLog.Info("Shutdown: state saved.");
+                try
+                {
+                    await Task.Delay(TimeSpan.FromMinutes(ModConfig.Instance.TickIntervalMinutes), ct).ConfigureAwait(false);
+                    TickOnce();
+                    TopUpNpcs(); // keep the pool full after ticks (deaths release slots)
+                }
+                catch (OperationCanceledException) { break; }
+                catch (Exception ex) { PluginLog.Warn("Run failed: " + ex); }
             }
-            catch (Exception ex)
+        }
+
+        /// <summary>
+        /// High-frequency movement loop: every ~1 second advances every physical
+        /// NPC towards its own goal in small smooth steps, and drains the NPC's
+        /// throttled routine queue (real-resource gathering + camp-storage usage).
+        /// Goal re-decisions stay on the slow simulation tick (ComputeGoal), so this
+        /// loop only steps movement and never collapses NPCs onto a shared target.
+        /// </summary>
+        private async Task MoveLoopAsync(CancellationToken ct)
+        {
+            var rng = new Random();
+            var creator = SafeOnlineCreator();
+            while (!ct.IsCancellationRequested)
             {
-                PluginLog.Warn("Shutdown save failed: " + ex.Message);
+                try
+                {
+                    // 0.7~1.1 s between steps: small per-step offsets (0.3~0.6 m)
+                    // now read as smooth continuous movement instead of 5~8 s teleports.
+                    await Task.Delay(TimeSpan.FromSeconds(0.7 + rng.NextDouble() * 0.4), ct).ConfigureAwait(false);
+                    int moved = 0;
+                    foreach (var npc in NpcManager.GetAll())
+                    {
+                        try
+                        {
+                            npc.BehaviorTick();
+                            moved++;
+                            Citizen c = null;
+                            try { c = _database.Find(npc.CitizenName); } catch { }
+                            npc.RoutineTick(c, creator);
+                        }
+                        catch (Exception ex) { PluginLog.Warn("NPC move step failed: " + ex.Message); }
+                    }
+                    if (moved > 0) LogDebug($"Move loop advanced {moved} NPC(s).");
+                }
+                catch (OperationCanceledException) { break; }
+                catch (Exception ex) { PluginLog.Warn("NPC move loop failed: " + ex.Message); }
             }
-            return Task.CompletedTask;
+        }
+
+        private User SafeOnlineCreator()
+        {
+            try { return UserManager.Users.FirstOrDefault(u => u != null && u.IsOnline); }
+            catch { return null; }
+        }
+
+        private void TickOnce()
+        {
+            lock (_runLock)
+            {
+                var cfg = ModConfig.Instance;
+                _lastTickUtc = DateTime.UtcNow;
+                LogDebug($"Tick start. Citizens: {_database.Count}");
+                try
+                {
+                    _simulation.Tick(_database, cfg);
+                    _database.Save();
+                    LogDebug($"Tick completed and saved. Citizens: {_database.Count}");
+                }
+                catch (Exception ex)
+                {
+                    LogDebug($"Tick FAILED: {ex}");
+                    PluginLog.Warn("Tick failed: " + ex);
+                    throw;
+                }
+
+                if (cfg.BroadcastDailyReport && _database.Count > 0)
+                {
+                    BroadcastReport();
+                }
+                PluginLog.Info($"Tick completed. Citizens: {_database.Count}");
+            }
         }
 
         public void SaveAll()
@@ -115,6 +280,136 @@ namespace EcoSimCitizens
             catch (Exception ex)
             {
                 PluginLog.Warn("SaveAll failed: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Top up physical NPCs to the AgentPoolManager.MaxActiveNpcs cap. Spawns
+        /// world NPCs for citizens that do not yet have one, using the first online
+        /// user as creator (falls back to null creator when nobody is online).
+        /// Returns the number of NPCs spawned this call.
+        /// </summary>
+        public int TopUpNpcs()
+        {
+            int spawned = 0;
+            try
+            {
+                if (_simulation == null) return 0;
+                var pool = _simulation.Pool;
+                var creator = UserManager.Users.FirstOrDefault(u => u != null && u.IsOnline);
+                var basePos = SafeSpawnPosition();
+                var rng = new Random();
+                foreach (var c in _database.Snapshot())
+                {
+                    if (pool.ActiveNpcCount >= pool.MaxActiveNpcs) break;
+                    if (NpcManager.Find(c.Name) != null) continue; // already physical
+                    if (!pool.CanSpawn(c.Name)) continue;
+                    var npc = NpcManager.SpawnAtRandom(c, creator, basePos, rng);
+                    if (npc == null)
+                    {
+                        pool.Release(c.Name); // spawn failed, free the slot for a retry
+                        continue;
+                    }
+                    spawned++;
+                }
+                if (spawned > 0)
+                    PluginLog.Info($"EcoSimCitizens: auto-spawned {spawned} NPC(s), pool {pool.ActiveNpcCount}/{pool.MaxActiveNpcs}.");
+                LogDebug($"NPC top-up done. spawned={spawned} pool={pool.ActiveNpcCount}/{pool.MaxActiveNpcs}");
+                EnsureMinimapForAllNpcs(); // always run: covers existing full pool (spawned=0) and newly spawned NPCs
+                EnsureSurvivalKitForAllNpcs(); // covers persisted NPCs and re-grants missing kit pieces
+            }
+            catch (Exception ex)
+            {
+                PluginLog.Warn("EcoSimCitizens: NPC top-up failed. " + ex.Message);
+            }
+            return spawned;
+        }
+
+        /// <summary>
+        /// Explicitly adds/sets the minimap marker on every live CitizenNpc. Needed
+        /// because WorldObject.PostInitialize (which normally calls SetCategory) is
+        /// only invoked on the create path (OnAdd -> DoInitializationSteps); persisted
+        /// NPCs deserialize through OnDeserialized without it, so their
+        /// MinimapComponent never reaches MinimapManager and the M-key map shows no
+        /// NPC markers. GetOrCreateComponent auto-runs component Initialize when the
+        /// world object is already initialized; SetCategory follows the official
+        /// StoreObject convention and is idempotent.
+        /// </summary>
+        private void EnsureMinimapForAllNpcs()
+        {
+            int ensured = 0;
+            try
+            {
+                foreach (var npc in NpcManager.GetAll())
+                {
+                    try
+                    {
+                        var comp = npc.GetOrCreateComponent<MinimapComponent>();
+                        if (comp == null) continue;
+                        comp.SetCategory(Localizer.DoStr("Citizens"));
+                        ensured++;
+                    }
+                    catch (Exception ex)
+                    {
+                        PluginLog.Warn($"EcoSimCitizens: minimap ensure failed for {npc.CitizenName}: {ex.Message}");
+                    }
+                }
+                PluginLog.Info($"EcoSimCitizens: minimap markers ensured on {ensured} NPC(s).");
+            }
+            catch (Exception ex)
+            {
+                PluginLog.Warn("EcoSimCitizens: EnsureMinimapForAllNpcs failed: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Ensures every live CitizenNpc (including persisted ones that skipped the
+        /// spawn path) gets its starter kit and first settlement attempt: backpack
+        /// inventory with the player-equivalent kit, Starter Camp, Workbench and
+        /// Tool Bench next to the NPC. Idempotent - items and objects already
+        /// present are never duplicated (see SurvivalKit).
+        /// </summary>
+        private void EnsureSurvivalKitForAllNpcs()
+        {
+            int ensured = 0;
+            try
+            {
+                var creator = UserManager.Users.FirstOrDefault(u => u != null && u.IsOnline);
+                foreach (var npc in NpcManager.GetAll())
+                {
+                    SurvivalKit.GrantToNpc(npc, creator);
+                    ensured++;
+                }
+                PluginLog.Info($"EcoSimCitizens: survival kit ensured on {ensured} NPC(s).");
+            }
+            catch (Exception ex)
+            {
+                PluginLog.Warn("EcoSimCitizens: EnsureSurvivalKitForAllNpcs failed: " + ex.Message);
+            }
+        }
+
+        private static Vector3 SafeSpawnPosition()
+        {
+            try { return UserManager.GetOrRelocateSpawnPosition(); }
+            catch { return Vector3.Zero; }
+        }
+
+        /// <summary>
+        /// Runs the three-way reconcile after the world is fully loaded. Uses the
+        /// same RunIfOrWhenInitialized gate as the minimap/survival passes so world
+        /// NPCs are enumerable. Returns the reconcile stats (or -1s on failure).
+        /// </summary>
+        private void ReconcileAfterWorldLoad()
+        {
+            try
+            {
+                var stats = _database.ReconcileWithWorld();
+                PluginLog.Info($"EcoSimCitizens: startup reconcile stats - created {stats.Created}, backfilled {stats.Backfilled}, cleared {stats.Cleared}.");
+                LogDebug($"Startup reconcile stats - created {stats.Created}, backfilled {stats.Backfilled}, cleared {stats.Cleared}.");
+            }
+            catch (Exception ex)
+            {
+                PluginLog.Warn("EcoSimCitizens: ReconcileAfterWorldLoad failed: " + ex.Message);
             }
         }
 

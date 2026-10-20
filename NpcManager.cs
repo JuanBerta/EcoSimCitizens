@@ -32,6 +32,9 @@ namespace EcoSimCitizens
                     {
                         created = wo as CitizenNpc;
                         created?.Bind(citizen, pos);
+                        // Starter kit + first settlement attempt (camp, workbench,
+                        // tool bench). Failures are logged, never fatal to spawn.
+                        SurvivalKit.GrantToNpc(created, creator);
                     },
                     null);
                 return created;
@@ -41,6 +44,34 @@ namespace EcoSimCitizens
                 PluginLog.Warn("NpcManager.Spawn failed: " + ex.Message);
                 return null;
             }
+        }
+
+        /// <summary>
+        /// Random spawn candidate around a base point: X/Z offset 5..25 m at a
+        /// random angle, Y stays at the base height. Each NPC gets its own point so
+        /// batch spawns no longer stack on a single coordinate.
+        /// </summary>
+        public static Vector3 RandomSpawnPoint(Vector3 basePos, Random rng)
+        {
+            double angle = rng.NextDouble() * Math.PI * 2.0;
+            double radius = 5.0 + rng.NextDouble() * 20.0;
+            float dx = (float)(Math.Cos(angle) * radius);
+            float dz = (float)(Math.Sin(angle) * radius);
+            return new Vector3(basePos.X + dx, basePos.Y, basePos.Z + dz);
+        }
+
+        /// <summary>
+        /// Spawns at independent random candidate points around basePos, retrying a
+        /// fresh point when WorldObjectManager.ForceAdd fails, up to attempts times.
+        /// </summary>
+        public static CitizenNpc SpawnAtRandom(Citizen citizen, User creator, Vector3 basePos, Random rng, int attempts = 5)
+        {
+            for (int i = 0; i < attempts; i++)
+            {
+                var npc = Spawn(citizen, creator, RandomSpawnPoint(basePos, rng));
+                if (npc != null) return npc;
+            }
+            return null;
         }
 
         public static CitizenNpc Find(string citizenName)

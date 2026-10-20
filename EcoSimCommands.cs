@@ -4,7 +4,9 @@ using System.Numerics;
 using System.Text;
 using Eco.Core;
 using Eco.Core.Plugins;
+using Eco.Core.Utils;
 using Eco.Gameplay.Players;
+using Eco.Gameplay.Systems.Messaging.Chat;
 using Eco.Gameplay.Systems.Messaging.Chat.Commands;
 using Eco.Shared.Services;
 
@@ -27,7 +29,19 @@ namespace EcoSimCitizens
     public class EcoSimCommands
     {
         private static EcoSimCitizens Plugin =>
-            PluginManager.GetPlugin<EcoSimCitizens>() ?? throw new InvalidOperationException("EcoSimCitizens plugin not loaded.");
+            EcoSimCitizens.Instance ?? throw new InvalidOperationException("EcoSimCitizens plugin not loaded.");
+
+        private static void Reply(User user, string message, NotificationStyle style = NotificationStyle.Info)
+        {
+            if (user == null) { PluginLog.Warn("EcoSim reply skipped (null user): " + message); return; }
+            var result = ChatManager.SendMessage(user, user, message);
+            if (result.Failed) PluginLog.Warn($"EcoSim reply failed: {result.Message} | {message}");
+        }
+
+        private static void ReplyError(User user, string message) => Reply(user, message, NotificationStyle.Error);
+        private static void ReplyOk(User user, string message) => Reply(user, message);
+
+
 
         [ChatCommand("EcoSim Citizens - status overview", "ecosimulator", ChatAuthorizationLevel.User)]
         public static void EcoSim(User user)
@@ -40,14 +54,14 @@ namespace EcoSimCitizens
             sb.AppendLine($"Market: {sim.Simulation.LastMarket.StoreCount} stores, avg price {sim.Simulation.LastMarket.AvgPrice:0.0}");
             sb.AppendLine($"Civic score: {sim.Simulation.LastCivic.CivicScore:0.0}/100");
             sb.AppendLine("Type /ecosimulator report for the full report.");
-            user.OkBoxLocStr(sb.ToString());
+            ReplyOk(user, sb.ToString());
         }
 
         [ChatSubCommand("ecosimulator", "Full simulation report", "report", ChatAuthorizationLevel.User)]
         public static void Report(User user)
         {
             var sim = Plugin;
-            user.MsgLocStr(ReportBuilder.Build(sim.Database, sim.Simulation, ModConfig.Instance), NotificationStyle.Info);
+            ReplyOk(user, ReportBuilder.Build(sim.Database, sim.Simulation, ModConfig.Instance));
         }
 
         [ChatSubCommand("ecosimulator", "List all citizens", "list", ChatAuthorizationLevel.User)]
@@ -61,7 +75,7 @@ namespace EcoSimCitizens
                 string home = c.HasHome ? $" home:{c.HomeDeedName}" : "";
                 sb.AppendLine($"  {c.Name} [{c.Profession}/{c.Trait}] H{c.Happiness:0.0} L{c.LedgerBalance:0.00}{home}");
             }
-            user.MsgLocStr(sb.ToString(), NotificationStyle.Info);
+            ReplyOk(user, sb.ToString());
         }
 
         [ChatSubCommand("ecosimulator", "List the real in-game professions available to citizens", "professions", ChatAuthorizationLevel.User)]
@@ -74,7 +88,7 @@ namespace EcoSimCitizens
                 var e = Professions.Get(id);
                 sb.AppendLine($"  {id} - {e.Focus} (productivity {e.Productivity:0.0}, earnings x{e.EarnMultiplier:0.0})");
             }
-            user.MsgLocStr(sb.ToString(), NotificationStyle.Info);
+            ReplyOk(user, sb.ToString());
         }
 
         [ChatSubCommand("ecosimulator", "Spawn a new citizen. Use /ecosimulator professions for the real profession list.", "spawncitizen", ChatAuthorizationLevel.Admin)]
@@ -85,13 +99,13 @@ namespace EcoSimCitizens
 
             if (string.IsNullOrWhiteSpace(name))
             {
-                user.MsgLocStr("Usage: /ecosimulator spawncitizen <name> <profession>", NotificationStyle.Error);
+                ReplyError(user, "Usage: /ecosimulator spawncitizen <name> <profession>");
                 return;
             }
 
             if (db.Count >= ModConfig.Instance.MaxCitizens)
             {
-                user.MsgLocStr($"Citizen cap reached ({ModConfig.Instance.MaxCitizens}).", NotificationStyle.Error);
+                ReplyError(user, $"Citizen cap reached ({ModConfig.Instance.MaxCitizens}).");
                 return;
             }
 
@@ -109,7 +123,7 @@ namespace EcoSimCitizens
 
             if (!db.Add(citizen))
             {
-                user.MsgLocStr($"A citizen named '{name}' already exists.", NotificationStyle.Error);
+                ReplyError(user, $"A citizen named '{name}' already exists.");
                 return;
             }
 
@@ -121,11 +135,11 @@ namespace EcoSimCitizens
 
             if (npc != null)
             {
-                user.MsgLocStr($"Citizen '{name}' ({citizen.Profession}, {citizen.Trait}) is now a real NPC in the world.", NotificationStyle.Info);
+                ReplyOk(user, $"Citizen '{name}' ({citizen.Profession}, {citizen.Trait}) is now a real NPC in the world.");
             }
             else
             {
-                user.MsgLocStr($"Citizen '{name}' ({citizen.Profession}, {citizen.Trait}) joined the simulation (world NPC unavailable, see logs).", NotificationStyle.Info);
+                ReplyOk(user, $"Citizen '{name}' ({citizen.Profession}, {citizen.Trait}) joined the simulation (world NPC unavailable, see logs).");
             }
             PluginLog.Info($"Spawned citizen {name} ({citizen.Profession}/{citizen.Trait}) npc={npc != null}");
         }
@@ -137,13 +151,13 @@ namespace EcoSimCitizens
             var c = db.Find(name);
             if (c == null)
             {
-                user.MsgLocStr($"No citizen named '{name}'.", NotificationStyle.Error);
+                ReplyError(user, $"No citizen named '{name}'.");
                 return;
             }
             NpcManager.DestroyFor(c);
             db.Remove(name);
             db.Save();
-            user.MsgLocStr($"Citizen '{name}' removed (world NPC despawned).", NotificationStyle.Info);
+            ReplyOk(user, $"Citizen '{name}' removed (world NPC despawned).");
         }
 
         [ChatSubCommand("ecosimulator", "Credit a citizen's ledger", "givecash", ChatAuthorizationLevel.Admin)]
@@ -152,12 +166,12 @@ namespace EcoSimCitizens
             var c = Plugin.Database.Find(name);
             if (c == null)
             {
-                user.MsgLocStr($"No citizen named '{name}'.", NotificationStyle.Error);
+                ReplyError(user, $"No citizen named '{name}'.");
                 return;
             }
             c.LedgerBalance += amount;
             Plugin.Database.Save();
-            user.MsgLocStr($"'{name}' ledger is now {c.LedgerBalance:0.00}.", NotificationStyle.Info);
+            ReplyOk(user, $"'{name}' ledger is now {c.LedgerBalance:0.00}.");
         }
 
         [ChatSubCommand("ecosimulator", "Assign a home deed to a citizen", "citizenhome", ChatAuthorizationLevel.Admin)]
@@ -166,16 +180,16 @@ namespace EcoSimCitizens
             var c = Plugin.Database.Find(name);
             if (c == null)
             {
-                user.MsgLocStr($"No citizen named '{name}'.", NotificationStyle.Error);
+                ReplyError(user, $"No citizen named '{name}'.");
                 return;
             }
             if (HousingEvaluator.FindDeed(deed) == null)
             {
-                user.MsgLocStr($"No deed named '{deed}' found in the property system.", NotificationStyle.Warning);
+                Reply(user, $"No deed named '{deed}' found in the property system.", NotificationStyle.Warning);
             }
             c.HomeDeedName = deed;
             Plugin.Database.Save();
-            user.MsgLocStr($"'{name}' now lives at deed '{deed}'.", NotificationStyle.Info);
+            ReplyOk(user, $"'{name}' now lives at deed '{deed}'.");
         }
 
         [ChatSubCommand("ecosimulator", "Force-save citizen state", "citizensave", ChatAuthorizationLevel.Admin)]
@@ -184,7 +198,7 @@ namespace EcoSimCitizens
             var sim = Plugin;
             sim.Database.Save();
             ModConfig.Instance.Save();
-            user.MsgLocStr("Citizen state and config saved.", NotificationStyle.Info);
+            ReplyOk(user, "Citizen state and config saved.");
         }
 
         [ChatSubCommand("ecosimulator", "Show current config values", "citizenconfig", ChatAuthorizationLevel.Admin)]
@@ -198,7 +212,7 @@ namespace EcoSimCitizens
             sb.AppendLine($"  Decay: calories {cfg.CalorieDecayPerTick}, comfort {cfg.ComfortDecayPerTick}, social {cfg.SocialDecayPerTick}");
             sb.AppendLine($"  Citizen cap: {cfg.MaxCitizens} | Broadcast report: {cfg.BroadcastDailyReport}");
             sb.AppendLine("  Config file: EcoSimCitizens/config.json next to the mod DLL.");
-            user.MsgLocStr(sb.ToString(), NotificationStyle.Info);
+            ReplyOk(user, sb.ToString());
         }
 
         [ChatSubCommand("ecosimulator", "Detailed citizen overview (skills, production, life stage, civics)", "citizens", ChatAuthorizationLevel.User)]
@@ -215,7 +229,7 @@ namespace EcoSimCitizens
                 sb.AppendLine($"    happiness {c.Happiness:0.0} | skill lvl {skills} | produced {c.ItemsProduced} sold {c.ItemsSold} | earn {c.RealEarned:0.00}");
                 sb.AppendLine($"    phase {c.CurrentPhase} | stage {stage} | age {c.AgeYears:0.0}y | home {(string.IsNullOrEmpty(c.SettlementName) ? (c.HasHome ? c.HomeDeedName : "-") : c.SettlementName)}");
             }
-            user.MsgLocStr(sb.ToString(), NotificationStyle.Info);
+            ReplyOk(user, sb.ToString());
         }
 
         [ChatSubCommand("ecosimulator", "Full profile of one citizen", "citizeninfo", ChatAuthorizationLevel.User)]
@@ -224,7 +238,7 @@ namespace EcoSimCitizens
             var c = Plugin.Database.Find(name);
             if (c == null)
             {
-                user.MsgLocStr($"No citizen named '{name}'.", NotificationStyle.Error);
+                ReplyError(user, $"No citizen named '{name}'.");
                 return;
             }
             var sb = new StringBuilder();
@@ -247,7 +261,7 @@ namespace EcoSimCitizens
             {
                 foreach (var t in c.SocialTrail) sb.AppendLine("  - " + t);
             }
-            user.MsgLocStr(sb.ToString(), NotificationStyle.Info);
+            ReplyOk(user, sb.ToString());
         }
 
         [ChatSubCommand("ecosimulator", "Show one citizen's recent social trail", "trail", ChatAuthorizationLevel.User)]
@@ -256,7 +270,7 @@ namespace EcoSimCitizens
             var c = Plugin.Database.Find(name);
             if (c == null)
             {
-                user.MsgLocStr($"No citizen named '{name}'.", NotificationStyle.Error);
+                ReplyError(user, $"No citizen named '{name}'.");
                 return;
             }
             var sb = new StringBuilder();
@@ -269,7 +283,7 @@ namespace EcoSimCitizens
             {
                 foreach (var t in c.SocialTrail) sb.AppendLine("  - " + t);
             }
-            user.MsgLocStr(sb.ToString(), NotificationStyle.Info);
+            ReplyOk(user, sb.ToString());
         }
 
         private static string PickTrait(string seed)

@@ -1,9 +1,12 @@
 using System;
 using System.Linq;
+using System.Numerics;
 using System.Text;
 using Eco.Core;
 using Eco.Core.Plugins;
+using Eco.Core.Utils;
 using Eco.Gameplay.Players;
+using Eco.Gameplay.Systems.Messaging.Chat;
 using Eco.Gameplay.Systems.Messaging.Chat.Commands;
 using Eco.Shared.Services;
 
@@ -20,7 +23,19 @@ namespace EcoSimCitizens
     public class NpcCommands
     {
         private static EcoSimCitizens Plugin =>
-            PluginManager.GetPlugin<EcoSimCitizens>() ?? throw new InvalidOperationException("EcoSimCitizens plugin not loaded.");
+            EcoSimCitizens.Instance ?? throw new InvalidOperationException("EcoSimCitizens plugin not loaded.");
+
+        private static void Reply(User user, string message, NotificationStyle style = NotificationStyle.Info)
+        {
+            if (user == null) { PluginLog.Warn("EcoSim reply skipped (null user): " + message); return; }
+            var result = ChatManager.SendMessage(user, user, message);
+            if (result.Failed) PluginLog.Warn($"EcoSim reply failed: {result.Message} | {message}");
+        }
+
+        private static void ReplyError(User user, string message) => Reply(user, message, NotificationStyle.Error);
+        private static void ReplyOk(User user, string message) => Reply(user, message);
+
+
 
         // ------------------------------------------------------------- pool (Req.18)
 
@@ -32,6 +47,9 @@ namespace EcoSimCitizens
             sb.AppendLine("EcoSim /npccmd commands:");
             sb.AppendLine("  /npccmd limit <int>          - max physical NPCs in the world");
             sb.AppendLine("  /npccmd pool                  - pool + hybrid pathfinding stats");
+            sb.AppendLine("  /npccmd npcs                  - list all NPCs (name, profession, position, distance)");
+            sb.AppendLine("  /npccmd locate <name>          - live position + distance of one NPC");
+            sb.AppendLine("  /npccmd fill                  - batch-spawn random NPCs up to the pool cap");
             sb.AppendLine("  /npccmd stats [settlement]    - JSON telemetry");
             sb.AppendLine("  /npccmd company create <name> <capital> | list | issue <corp> <name> <shares> | vote <corp> <choice> | resolve <corp> | hire <corp> <citizen> <wage> | dividends <corp> <amount>");
             sb.AppendLine("  /npccmd stock list | addfuture <commodity> <base> | buy <citizen> <commodity>");
@@ -41,25 +59,141 @@ namespace EcoSimCitizens
             sb.AppendLine("  /npccmd research status");
             sb.AppendLine("  /npccmd env get | set <pollution> <co2> <soil> | cleanup <amount> | meteor <power> <resources> | impact <day>");
             sb.AppendLine("  /npccmd dialogue <citizen>");
-            user.OkBoxLocStr(sb.ToString());
+            ReplyOk(user, sb.ToString());
         }
 
         [ChatSubCommand("npccmd", "Set the maximum number of physical NPC citizens", "limit", ChatAuthorizationLevel.Admin)]
         public static void Limit(User user, int amount)
         {
-            if (amount < 0) { user.ErrorLocStr("Limit must be >= 0."); return; }
+            if (amount < 0) { ReplyError(user, "Limit must be >= 0."); return; }
             Plugin.Simulation.Pool.MaxActiveNpcs = amount;
-            user.MsgLocStr($"NPC pool limit set to {amount} (currently {Plugin.Simulation.Pool.ActiveNpcCount} active).", NotificationStyle.Info);
+            int spawned = Plugin.TopUpNpcs();
+            ReplyOk(user, $"NPC pool limit set to {amount} (currently {Plugin.Simulation.Pool.ActiveNpcCount} active, auto-spawned {spawned}).");
         }
 
         [ChatSubCommand("npccmd", "Show agent pool and hybrid pathfinding statistics", "pool", ChatAuthorizationLevel.Admin)]
         public static void Pool(User user)
         {
             var pool = Plugin.Simulation.Pool;
-            user.MsgLocStr(
+            ReplyOk(user, 
                 $"NPC pool: {pool.ActiveNpcCount}/{pool.MaxActiveNpcs} | spawn attempts {pool.TotalSpawnAttempts}, blocked by cap {pool.SpawnBlockedByCap}" + Environment.NewLine +
-                $"Hybrid pathfinding: {pool.PhysicalMoveTicks} physical ticks, {pool.LogicalMoveTicks} logical ticks, physical ratio {pool.PhysicalPathfindingRatio():0.00}",
-                NotificationStyle.Info);
+                $"Hybrid pathfinding: {pool.PhysicalMoveTicks} physical ticks, {pool.LogicalMoveTicks} logical ticks, physical ratio {pool.PhysicalPathfindingRatio():0.00}");
+        }
+
+        // ------------------------------------------------------- NPC tracking (list / track)
+
+        /// <summary>
+        /// Lists every world NPC with its real in-world position (WorldObject.Position)
+        /// and its straight-line distance from the issuing player (User.Position).
+        /// </summary>
+        [ChatSubCommand("npccmd", "List all world NPCs with name, profession, position and distance from you", "npcs", ChatAuthorizationLevel.User)]
+        public static void NpcList(User user)
+        {
+            var npcs = NpcManager.GetAll().OrderBy(n => n.CitizenName, StringComparer.OrdinalIgnoreCase).ToList();
+            if (npcs.Count == 0)
+            {
+                ReplyOk(user, "No world NPCs are currently spawned.");
+                return;
+            }
+            var playerPos = user?.Position ?? Vector3.Zero;
+            var sb = new StringBuilder();
+            sb.AppendLine($"World NPCs ({npcs.Count}):");
+            foreach (var n in npcs)
+            {
+                var p = n.Position;
+                float dist = playerPos == Vector3.Zero ? 0f : Vector3.Distance(playerPos, p);
+                sb.AppendLine($"  {n.CitizenName} [{n.ProfessionSkill}] @ ({p.X:0}, {p.Y:0}, {p.Z:0}) | {dist:0.0} m away");
+            }
+            ReplyOk(user, sb.ToString());
+        }
+
+        /// <summary>
+        /// Shows one NPC's live world position and the distance from the issuing
+        /// player. NPCs move on every simulation tick, so re-run the command to
+        /// refresh the beacon.
+        /// </summary>
+        [ChatSubCommand("npccmd", "Show one NPC's live position and distance from you", "locate", ChatAuthorizationLevel.User)]
+        public static void Track(User user, string name)
+        {
+            var npc = NpcManager.Find(name);
+            if (npc == null)
+            {
+                ReplyError(user, $"No world NPC named '{name}'. Use /npccmd npcs to see who is spawned.");
+                return;
+            }
+            var p = npc.Position;
+            var playerPos = user?.Position ?? Vector3.Zero;
+            float dist = playerPos == Vector3.Zero ? 0f : Vector3.Distance(playerPos, p);
+            ReplyOk(user, $"{npc.CitizenName} [{npc.ProfessionSkill}] @ ({p.X:0}, {p.Y:0}, {p.Z:0}) | {dist:0.0} m from you. Re-run /npccmd locate {name} to refresh (NPCs move each simulation tick).");
+        }
+
+        // --------------------------------------------------------------- batch spawn (fill)
+
+        /// <summary>
+        /// Batch-spawns NPCs up to the AgentPoolManager.MaxActiveNpcs cap. First
+        /// tops up physical NPCs for citizens that already exist without one, then
+        /// creates brand-new citizens with a random name (CitizenNames pool) and a
+        /// random real in-game profession (Professions.AllIds) until the pool cap,
+        /// the MaxCitizens cap, or a spawn-failure streak stops the loop.
+        /// </summary>
+        [ChatSubCommand("npccmd", "Batch-spawn random NPCs up to the MaxActiveNpcs pool cap", "fill", ChatAuthorizationLevel.Admin)]
+        public static void Fill(User user)
+        {
+            var sim = Plugin;
+            var pool = sim.Simulation.Pool;
+            var db = sim.Database;
+            int maxCitizens = ModConfig.Instance.MaxCitizens;
+            int dbBefore = db.Count;
+            int poolBefore = pool.ActiveNpcCount;
+
+            // 1) citizens already in the DB but without a physical NPC yet
+            int topped = sim.TopUpNpcs();
+
+            // 2) brand-new citizens until the pool is full (or the citizen cap is hit)
+            int created = 0;
+            int spawnedNew = 0;
+            int failedSpawns = 0;
+            var rng = new Random();
+            var professions = Professions.AllIds.ToArray();
+            var traits = Traits.AllIds.ToArray();
+            Vector3 spawnPos;
+            try { spawnPos = UserManager.GetOrRelocateSpawnPosition(); }
+            catch { spawnPos = user?.Position ?? Vector3.Zero; }
+
+            while (pool.ActiveNpcCount < pool.MaxActiveNpcs && db.Count < maxCitizens)
+            {
+                string name = CitizenNames.UniqueRandomName(db, rng);
+                string profession = professions[rng.Next(professions.Length)];
+                var citizen = new Citizen
+                {
+                    Name = name,
+                    Profession = profession,
+                    Trait = traits[rng.Next(traits.Length)],
+                    LedgerBalance = ModConfig.Instance.StartingBalance,
+                    Calories = 70,
+                    Comfort = 50,
+                    Social = 50,
+                    Happiness = 50,
+                    AppearanceSeed = rng.Next(0, int.MaxValue),
+                };
+                if (!db.Add(citizen)) continue;
+                created++;
+
+                if (!pool.CanSpawn(citizen.Name)) continue; // pool became full mid-loop
+
+                var npc = NpcManager.SpawnAtRandom(citizen, user, spawnPos, rng);
+                if (npc == null)
+                {
+                    pool.Release(citizen.Name); // free the slot; a later tick will retry
+                    failedSpawns++;
+                    if (failedSpawns >= 10) break; // world spawn is failing - do not inflate the DB
+                    continue;
+                }
+                spawnedNew++;
+            }
+
+            db.Save();
+            ReplyOk(user, $"Fill complete: {created} new citizens created, {spawnedNew} new NPCs spawned, {topped} existing citizens topped up. Pool {pool.ActiveNpcCount}/{pool.MaxActiveNpcs} (was {poolBefore}), DB {db.Count}/{maxCitizens} (was {dbBefore}).");
         }
 
         // ------------------------------------------------------------ telemetry (Req.20)
@@ -68,7 +202,7 @@ namespace EcoSimCitizens
         public static void Stats(User user, string settlementId = "")
         {
             var sim = Plugin;
-            user.MsgLocStr(sim.Simulation.Telemetry.BuildStatsJson(sim.Database, sim.Simulation, settlementId), NotificationStyle.Info);
+            ReplyOk(user, sim.Simulation.Telemetry.BuildStatsJson(sim.Database, sim.Simulation, settlementId));
         }
 
         // ------------------------------------------------------------- companies (Req.15)
@@ -80,9 +214,9 @@ namespace EcoSimCitizens
             double cap = capital;
             if (action.Equals("create", StringComparison.OrdinalIgnoreCase))
             {
-                if (string.IsNullOrEmpty(name)) { user.ErrorLocStr("Usage: /npccmd company create <name> <capital>"); return; }
+                if (string.IsNullOrEmpty(name)) { ReplyError(user, "Usage: /npccmd company create <name> <capital>"); return; }
                 var corp = sys.Create(name, "Admin", cap);
-                user.MsgLocStr($"Corporation {corp.Name} created (id {corp.Id}, capital {cap:0.0}).", NotificationStyle.Info);
+                ReplyOk(user, $"Corporation {corp.Name} created (id {corp.Id}, capital {cap:0.0}).");
             }
             else if (action.Equals("list", StringComparison.OrdinalIgnoreCase))
             {
@@ -92,52 +226,52 @@ namespace EcoSimCitizens
                     sb.AppendLine($"{corp.Name} ({corp.Id}) owners {corp.Owners.Count}, assets {corp.Assets:0.0}, employees {corp.Employees.Count}, last vote: {corp.LastVoteWinner ?? "-"}");
                 }
                 if (sys.Corporations.Count == 0) sb.AppendLine("(no corporations)");
-                user.MsgLocStr(sb.ToString(), NotificationStyle.Info);
+                ReplyOk(user, sb.ToString());
             }
             else if (action.Equals("issue", StringComparison.OrdinalIgnoreCase))
             {
                 var corp = sys.Find(name);
-                if (corp == null) { user.ErrorLocStr("Corporation not found."); return; }
+                if (corp == null) { ReplyError(user, "Corporation not found."); return; }
                 // args: <corp> <owner> <shares> <price> encoded as name=corp, capital=shares, plus helper fields
                 sys.IssueShares(corp, "Admin", Math.Max(1, cap), 1.0);
-                user.MsgLocStr($"Issued shares to Admin; total now {corp.TotalShares}.", NotificationStyle.Info);
+                ReplyOk(user, $"Issued shares to Admin; total now {corp.TotalShares}.");
             }
             else if (action.Equals("vote", StringComparison.OrdinalIgnoreCase))
             {
                 var corp = sys.Find(name);
-                if (corp == null) { user.ErrorLocStr("Corporation not found."); return; }
+                if (corp == null) { ReplyError(user, "Corporation not found."); return; }
                 sys.CastVote(corp, "Admin", cap > 0 ? "Growth" : "Safety");
-                user.MsgLocStr("Vote cast (equity weighted).", NotificationStyle.Info);
+                ReplyOk(user, "Vote cast (equity weighted).");
             }
             else if (action.Equals("resolve", StringComparison.OrdinalIgnoreCase))
             {
                 var corp = sys.Find(name);
-                if (corp == null) { user.ErrorLocStr("Corporation not found."); return; }
+                if (corp == null) { ReplyError(user, "Corporation not found."); return; }
                 string winner = sys.ResolveVote(corp);
-                user.MsgLocStr($"Vote resolved: {(winner ?? "no votes")}.", NotificationStyle.Info);
+                ReplyOk(user, $"Vote resolved: {(winner ?? "no votes")}.");
             }
             else if (action.Equals("hire", StringComparison.OrdinalIgnoreCase))
             {
                 var corp = sys.Find(name);
-                if (corp == null) { user.ErrorLocStr("Corporation not found."); return; }
+                if (corp == null) { ReplyError(user, "Corporation not found."); return; }
                 var db = Plugin.Database;
                 var c = db.Find(cap > 0 ? "Admin" : null);
                 // fallback: hire the richest citizen if the name arg wasn't a citizen
                 c ??= db.Snapshot().OrderByDescending(x => x.LedgerBalance).FirstOrDefault();
-                if (c == null) { user.ErrorLocStr("No citizen to hire."); return; }
+                if (c == null) { ReplyError(user, "No citizen to hire."); return; }
                 bool ok = sys.Hire(corp, c, 8.0);
-                user.MsgLocStr(ok ? $"Hired {c.Name} into {corp.Name}." : "Hire declined (budget/expectation check failed).", NotificationStyle.Info);
+                ReplyOk(user, ok ? $"Hired {c.Name} into {corp.Name}." : "Hire declined (budget/expectation check failed).");
             }
             else if (action.Equals("dividends", StringComparison.OrdinalIgnoreCase))
             {
                 var corp = sys.Find(name);
-                if (corp == null) { user.ErrorLocStr("Corporation not found."); return; }
+                if (corp == null) { ReplyError(user, "Corporation not found."); return; }
                 sys.PayDividends(corp, cap);
-                user.MsgLocStr($"Dividend pool now {corp.DividendPool:0.0}.", NotificationStyle.Info);
+                ReplyOk(user, $"Dividend pool now {corp.DividendPool:0.0}.");
             }
             else
             {
-                user.ErrorLocStr("Unknown action. Use create|list|issue|vote|resolve|hire|dividends.");
+                ReplyError(user, "Unknown action. Use create|list|issue|vote|resolve|hire|dividends.");
             }
         }
 
@@ -154,26 +288,26 @@ namespace EcoSimCitizens
                 foreach (var l in ex.Listings) sb.AppendLine($"{l.Name}: {l.LastPrice:0.00}/share ({l.Shares} shares)");
                 foreach (var f in ex.Futures) sb.AppendLine($"Future {f.Commodity}: {f.LastPrice:0.00} (base {f.BasePrice:0.00}, supply {f.Supply:0.0}, demand {f.Demand:0.0})");
                 if (ex.Listings.Count == 0 && ex.Futures.Count == 0) sb.AppendLine("(exchange empty - /npccmd stock addfuture <commodity> <base>)");
-                user.MsgLocStr(sb.ToString(), NotificationStyle.Info);
+                ReplyOk(user, sb.ToString());
             }
             else if (action.Equals("addfuture", StringComparison.OrdinalIgnoreCase))
             {
-                if (string.IsNullOrEmpty(name)) { user.ErrorLocStr("Usage: /npccmd stock addfuture <commodity> <base>"); return; }
+                if (string.IsNullOrEmpty(name)) { ReplyError(user, "Usage: /npccmd stock addfuture <commodity> <base>"); return; }
                 var f = ex.AddFuture(name, amt > 0 ? amt : 10.0);
-                user.MsgLocStr($"Future contract {f.Id} added for {f.Commodity}.", NotificationStyle.Info);
+                ReplyOk(user, $"Future contract {f.Id} added for {f.Commodity}.");
             }
             else if (action.Equals("buy", StringComparison.OrdinalIgnoreCase))
             {
                 var db = Plugin.Database;
                 var c = db.Find(name);
-                if (c == null) { user.ErrorLocStr("Citizen not found."); return; }
+                if (c == null) { ReplyError(user, "Citizen not found."); return; }
                 bool ok = ex.TryBuyFuture(c, "Iron Bar", 0.1);
                 if (!ok) ok = ex.TryBuyFuture(c, "Oil", 0.1);
-                user.MsgLocStr(ok ? $"{c.Name} bought a futures position." : "No buy (price not attractive or funds short).", NotificationStyle.Info);
+                ReplyOk(user, ok ? $"{c.Name} bought a futures position." : "No buy (price not attractive or funds short).");
             }
             else
             {
-                user.ErrorLocStr("Unknown action. Use list|addfuture|buy.");
+                ReplyError(user, "Unknown action. Use list|addfuture|buy.");
             }
         }
 
@@ -192,32 +326,32 @@ namespace EcoSimCitizens
                     sb.AppendLine($"{cur.SettlementName} ({cur.Symbol}): supply {cur.Supply:0.0}, reserve {cur.BackingReserve:0.0}, GDP {cur.Gdp:0.0}, pop {cur.Population:0}");
                 }
                 if (cs.Currencies.Count == 0) sb.AppendLine("(no currencies minted)");
-                user.MsgLocStr(sb.ToString(), NotificationStyle.Info);
+                ReplyOk(user, sb.ToString());
             }
             else if (action.Equals("mint", StringComparison.OrdinalIgnoreCase))
             {
                 var cur = cs.Mint(name, symbol, amt > 0 ? amt : 100);
-                user.MsgLocStr($"Minted {cur.Symbol} for {cur.SettlementName} (reserve {cur.BackingReserve:0.0}).", NotificationStyle.Info);
+                ReplyOk(user, $"Minted {cur.Symbol} for {cur.SettlementName} (reserve {cur.BackingReserve:0.0}).");
             }
             else if (action.Equals("rate", StringComparison.OrdinalIgnoreCase))
             {
                 var from = cs.Find(name);
                 var to = cs.Find(symbol);
-                if (from == null || to == null) { user.ErrorLocStr("Both settlements must have currencies."); return; }
+                if (from == null || to == null) { ReplyError(user, "Both settlements must have currencies."); return; }
                 double rate = cs.ForexRate(from, to);
-                user.MsgLocStr($"1 {from.Symbol} = {rate:0.000} {to.Symbol}", NotificationStyle.Info);
+                ReplyOk(user, $"1 {from.Symbol} = {rate:0.000} {to.Symbol}");
             }
             else if (action.Equals("convert", StringComparison.OrdinalIgnoreCase))
             {
                 var db = Plugin.Database;
                 var c = db.Find(name);
-                if (c == null) { user.ErrorLocStr("Citizen not found."); return; }
+                if (c == null) { ReplyError(user, "Citizen not found."); return; }
                 bool ok = cs.Convert(c, name, symbol, amt);
-                user.MsgLocStr(ok ? "Converted." : "Conversion failed (missing funds or currencies).", NotificationStyle.Info);
+                ReplyOk(user, ok ? "Converted." : "Conversion failed (missing funds or currencies).");
             }
             else
             {
-                user.ErrorLocStr("Unknown action. Use list|mint|rate|convert.");
+                ReplyError(user, "Unknown action. Use list|mint|rate|convert.");
             }
         }
 
@@ -231,7 +365,7 @@ namespace EcoSimCitizens
             if (action.Equals("create", StringComparison.OrdinalIgnoreCase))
             {
                 var p = sys.CreateParty(name, string.IsNullOrEmpty(task) ? "General" : task, amt > 0 ? amt : 100, 50);
-                user.MsgLocStr($"Work party {p.Name} created (id {p.Id}).", NotificationStyle.Info);
+                ReplyOk(user, $"Work party {p.Name} created (id {p.Id}).");
             }
             else if (action.Equals("list", StringComparison.OrdinalIgnoreCase))
             {
@@ -241,27 +375,27 @@ namespace EcoSimCitizens
                     sb.AppendLine($"{p.Name} ({p.Id}) task {p.Task}, members {p.MemberCount}, pool {p.Pool:0.0}, progress {p.Progress:0.0}/{p.TargetProgress:0.0}");
                 }
                 if (sys.Parties.Count == 0) sb.AppendLine("(no work parties)");
-                user.MsgLocStr(sb.ToString(), NotificationStyle.Info);
+                ReplyOk(user, sb.ToString());
             }
             else if (action.Equals("join", StringComparison.OrdinalIgnoreCase))
             {
                 var db = Plugin.Database;
                 var c = db.Find(name);
                 var p = sys.Find(task);
-                if (c == null || p == null) { user.ErrorLocStr("Citizen or party not found."); return; }
+                if (c == null || p == null) { ReplyError(user, "Citizen or party not found."); return; }
                 sys.Join(p, c);
-                user.MsgLocStr($"{c.Name} joined {p.Name}.", NotificationStyle.Info);
+                ReplyOk(user, $"{c.Name} joined {p.Name}.");
             }
             else if (action.Equals("leave", StringComparison.OrdinalIgnoreCase))
             {
                 var c = Plugin.Database.Find(name);
-                if (c == null) { user.ErrorLocStr("Citizen not found."); return; }
+                if (c == null) { ReplyError(user, "Citizen not found."); return; }
                 sys.Withdraw(c);
-                user.MsgLocStr($"{c.Name} left their party.", NotificationStyle.Info);
+                ReplyOk(user, $"{c.Name} left their party.");
             }
             else
             {
-                user.ErrorLocStr("Unknown action. Use create|list|join|leave.");
+                ReplyError(user, "Unknown action. Use create|list|join|leave.");
             }
         }
 
@@ -280,26 +414,26 @@ namespace EcoSimCitizens
                 }
                 if (Plugin.Database.Snapshot().All(x => x.BlueprintId == null)) sb.AppendLine("(no active construction plans)");
                 sb.AppendLine($"Completed projects: {sim.Construction.ProjectsCompleted} | materials purchased: {sim.Construction.MaterialsPurchased:0.0}");
-                user.MsgLocStr(sb.ToString(), NotificationStyle.Info);
+                ReplyOk(user, sb.ToString());
             }
             else if (action.Equals("plan", StringComparison.OrdinalIgnoreCase))
             {
                 var c = Plugin.Database.Find(name);
-                if (c == null) { user.ErrorLocStr("Citizen not found."); return; }
+                if (c == null) { ReplyError(user, "Citizen not found."); return; }
                 bool planned = sim.Construction.EnsurePlan(c, "Temperate");
-                user.MsgLocStr(planned ? $"Planned {c.BlueprintId} for {c.Name}." : $"{c.Name} already has a plan ({c.BlueprintId}).", NotificationStyle.Info);
+                ReplyOk(user, planned ? $"Planned {c.BlueprintId} for {c.Name}." : $"{c.Name} already has a plan ({c.BlueprintId}).");
             }
             else if (action.Equals("status", StringComparison.OrdinalIgnoreCase))
             {
                 var c = Plugin.Database.Find(name);
-                if (c == null) { user.ErrorLocStr("Citizen not found."); return; }
-                user.MsgLocStr(c.BlueprintId == null
+                if (c == null) { ReplyError(user, "Citizen not found."); return; }
+                ReplyOk(user, c.BlueprintId == null
                     ? $"{c.Name} has no plan."
-                    : $"{c.Name}: {c.BlueprintId} progress {c.ConstructionProgress:0.00}", NotificationStyle.Info);
+                    : $"{c.Name}: {c.BlueprintId} progress {c.ConstructionProgress:0.00}");
             }
             else
             {
-                user.ErrorLocStr("Unknown action. Use list|plan|status.");
+                ReplyError(user, "Unknown action. Use list|plan|status.");
             }
         }
 
@@ -316,7 +450,7 @@ namespace EcoSimCitizens
                 int tier = r.TierFor(kv.Key);
                 sb.AppendLine($"  {kv.Key}: {kv.Value:0.0} points (tier {tier})");
             }
-            user.MsgLocStr(sb.ToString(), NotificationStyle.Info);
+            ReplyOk(user, sb.ToString());
         }
 
         // -------------------------------------------------------- environment & meteor (Req.5/17)
@@ -329,36 +463,35 @@ namespace EcoSimCitizens
             double amt2 = amount2;
             if (action.Equals("get", StringComparison.OrdinalIgnoreCase))
             {
-                user.MsgLocStr(
+                ReplyOk(user, 
                     $"Pollution {env.Pollution:0.0}/100 | CO2 {env.CO2:0.0} | soil {env.SoilDegradation:0.0} | crisis {env.CrisisActive}" + Environment.NewLine +
-                    $"Meteor progress {env.MeteorProgress:0.000} | impact day {env.ImpactDay:0.0} | impacted {env.MeteorImpacted}",
-                    NotificationStyle.Info);
+                    $"Meteor progress {env.MeteorProgress:0.000} | impact day {env.ImpactDay:0.0} | impacted {env.MeteorImpacted}");
             }
             else if (action.Equals("set", StringComparison.OrdinalIgnoreCase))
             {
                 env.Pollution = amt;
                 env.CO2 = amt2;
                 env.SoilDegradation = name.Length > 0 ? double.Parse(name) : 0;
-                user.MsgLocStr("Environment values updated.", NotificationStyle.Info);
+                ReplyOk(user, "Environment values updated.");
             }
             else if (action.Equals("cleanup", StringComparison.OrdinalIgnoreCase))
             {
                 env.DoCleanup(amt);
-                user.MsgLocStr($"Cleanup applied, pollution now {env.Pollution:0.0}.", NotificationStyle.Info);
+                ReplyOk(user, $"Cleanup applied, pollution now {env.Pollution:0.0}.");
             }
             else if (action.Equals("meteor", StringComparison.OrdinalIgnoreCase))
             {
                 bool done = env.ContributeToMeteorDefence(amt, amt2, 100);
-                user.MsgLocStr(done ? "Meteor laser fully charged!" : $"Meteor progress now {env.MeteorProgress:0.000}.", NotificationStyle.Info);
+                ReplyOk(user, done ? "Meteor laser fully charged!" : $"Meteor progress now {env.MeteorProgress:0.000}.");
             }
             else if (action.Equals("impact", StringComparison.OrdinalIgnoreCase))
             {
                 env.ImpactDay = amt;
-                user.MsgLocStr($"Impact day set to {env.ImpactDay:0.0}.", NotificationStyle.Info);
+                ReplyOk(user, $"Impact day set to {env.ImpactDay:0.0}.");
             }
             else
             {
-                user.ErrorLocStr("Unknown action. Use get|set|cleanup|meteor|impact.");
+                ReplyError(user, "Unknown action. Use get|set|cleanup|meteor|impact.");
             }
         }
 
@@ -368,8 +501,8 @@ namespace EcoSimCitizens
         public static void Dialogue(User user, string name)
         {
             var c = Plugin.Database.Find(name);
-            if (c == null) { user.ErrorLocStr("Citizen not found."); return; }
-            user.MsgLocStr(DialogueTree.RecentLines(c), NotificationStyle.Info);
+            if (c == null) { ReplyError(user, "Citizen not found."); return; }
+            ReplyOk(user, DialogueTree.RecentLines(c));
         }
     }
 }

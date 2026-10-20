@@ -1,45 +1,40 @@
 using System;
 using System.Collections.Generic;
-using Eco.Core;
-using Eco.Gameplay.Components;
-using Eco.Gameplay.Components.Store;
 using Eco.Gameplay.Economy;
-using Eco.Gameplay.Objects;
+using Eco.Shared.Services;
 
 namespace EcoSimCitizens
 {
     /// <summary>
-    /// Real-money layer for NPCs. Each citizen gets a real in-game BankAccount and
-    /// spends real currency: buying food transfers actual money from the citizen's
-    /// account into the store's real bank account. This makes NPC demand visible in
-    /// the live economy instead of living only inside the mod's JSON ledger.
+    /// NPC money layer. Every citizen gets a native BankAccount registered through
+    /// BankAccountManager.Registrar (NativeCurrencyBridge.NpcAccount) and trades
+    /// settle mod-internally: money moves from buyer's account to seller's account
+    /// with AddCurrency on both sides - never StoreComponent.PerformTrade, never
+    /// real stores. Grants use the registered settlement currency so the currency
+    /// appears in the game's native currency list.
     ///
-    /// NOTE: NPC accounts are funded with a simulated starting grant, because Eco
-    /// has no native "NPC user" concept; every operation is guarded so the mod
-    /// degrades to observational mode if the economy rejects the transaction.
+    /// When no native currency/account can be registered (e.g. server with no
+    /// users), operations degrade to ledger-only simulation so NPCs still function.
     /// </summary>
     public static class CitizenEconomy
     {
-        private static readonly Dictionary<string, BankAccount> Accounts = new(StringComparer.OrdinalIgnoreCase);
-
+        /// <summary>
+        /// Gets or creates the native bank account for an NPC via
+        /// BankAccountManager.Registrar. The account is registered in the banking
+        /// system (visible/enumerable); identified by "EcoSim-&lt;name&gt;".
+        /// </summary>
         public static BankAccount AccountFor(string citizenName)
-        {
-            if (!Accounts.TryGetValue(citizenName, out var acc))
-            {
-                acc = new BankAccount();
-                Accounts[citizenName] = acc;
-            }
-            return acc;
-        }
+            => NativeCurrencyBridge.NpcAccount(citizenName);
 
-        /// <summary>Grants the citizen its starting balance in the first store's currency.</summary>
+        /// <summary>Grants the citizen its starting balance in the registered settlement currency.</summary>
         public static void GrantStartFunds(string citizenName, float amount)
         {
             try
             {
-                var cur = FindStoreCurrency();
-                if (cur == null) return;
-                AccountFor(citizenName).AddCurrency(cur, amount, false);
+                var cur = NativeCurrencyBridge.DefaultCurrency();
+                var acc = AccountFor(citizenName);
+                if (cur == null || acc == null) return;
+                acc.AddCurrency(cur, amount, false);
             }
             catch (Exception ex)
             {
@@ -48,67 +43,55 @@ namespace EcoSimCitizens
         }
 
         /// <summary>
-        /// Finds the cheapest priced food offer across all real stores and moves real
-        /// money from the citizen's account to the store's bank account.
+        /// NPC-to-NPC simulated settlement: moves money from buyer's account into
+        /// seller's account (both registered native accounts when available) and
+        /// mirrors the balances in the citizen ledgers. Returns false when the buyer
+        /// cannot pay. Never touches a real store or StoreComponent.
         /// </summary>
-        public static bool TryBuyCheapestFood(string citizenName, out float spent)
+        public static bool TransferNpcFunds(Citizen from, Citizen to, double amount)
         {
-            spent = 0;
+            if (from == null || to == null || amount <= 0) return false;
             try
             {
-                var acc = AccountFor(citizenName);
-                float best = float.MaxValue;
-                StoreComponent bestStore = null;
-                foreach (var wo in PluginManager.GetPlugin<WorldObjectManager>().All)
+                var cur = NativeCurrencyBridge.DefaultCurrency();
+                if (cur != null)
                 {
-                    if (wo == null || wo.IsDestroyed) continue;
-
-                    StoreComponent store = null;
-                    try { store = wo.GetComponent("StoreComponent") as StoreComponent; }
-                    catch { }
-
-                    if (store == null || store.IsBarter || store.BankAccount == null) continue;
-                    foreach (var offer in store.AllOffers)
+                    var buyer = AccountFor(from.Name);
+                    var seller = AccountFor(to.Name);
+                    if (buyer != null && seller != null)
                     {
-                        if (offer == null || !offer.HasPrice || !offer.TagIsFoodTag) continue;
-                        if (offer.Price > 0 && offer.Price < best)
-                        {
-                            best = offer.Price;
-                            bestStore = store;
-                        }
+                        float amt = (float)amount;
+                        if (buyer.GetCurrencyHoldingVal(cur) < amt) return false;
+                        buyer.AddCurrency(cur, -amt, false);
+                        seller.AddCurrency(cur, amt, false);
+                    }
+                    else
+                    {
+                        // ledger-only fallback when accounts unavailable
+                        if (from.LedgerBalance < amount) return false;
                     }
                 }
+                else
+                {
+                    if (from.LedgerBalance < amount) return false;
+                }
 
-                if (bestStore == null || best == float.MaxValue) return false;
-                var cur = bestStore.Currency;
-                if (cur == null) return false;
-
-                // Real money movement: citizen pays, store account receives.
-                acc.AddCurrency(cur, -best, false);
-                bestStore.BankAccount.AddCurrency(cur, best, false);
-                spent = best;
+                from.LedgerBalance -= amount;
+                to.LedgerBalance += amount;
                 return true;
             }
             catch (Exception ex)
             {
-                PluginLog.Warn("Buy food failed: " + ex.Message);
+                PluginLog.Warn("TransferNpcFunds failed: " + ex.Message);
                 return false;
             }
         }
 
-        private static Currency FindStoreCurrency()
+        /// <summary>Balance of an NPC account in the registered currency (0 when unavailable).</summary>
+        public static float NativeBalance(string citizenName)
         {
-            foreach (var wo in PluginManager.GetPlugin<WorldObjectManager>().All)
-            {
-                if (wo == null || wo.IsDestroyed) continue;
-                try
-                {
-                    var store = wo.GetComponent("StoreComponent") as StoreComponent;
-                    if (store != null && store.Currency != null) return store.Currency;
-                }
-                catch { }
-            }
-            return null;
+            var cur = NativeCurrencyBridge.DefaultCurrency();
+            return NativeCurrencyBridge.NpcBalance(citizenName, cur);
         }
     }
 }

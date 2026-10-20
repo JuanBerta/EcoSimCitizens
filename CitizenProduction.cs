@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Eco.Core;
 using Eco.Gameplay.Components;
+using Eco.Gameplay.Components.Storage;
 using Eco.Gameplay.Components.Store;
 using Eco.Gameplay.Economy;
 using Eco.Gameplay.Items;
@@ -11,19 +12,15 @@ using Eco.Gameplay.Objects;
 namespace EcoSimCitizens
 {
     /// <summary>
-    /// Production, real inventory and market listing for citizens.
+    /// Production, real inventory and simulated-store listing for citizens.
     ///
     ///  - Production: during the working day a citizen "crafts" real Eco item types
     ///    that fit its profession. Production is tracked in a personal inventory
     ///    ledger keyed by the real item type name.
-    ///  - Listing: the produced goods are offered to the real market. When a real
-    ///    store runs a buying offer that matches the item, real currency flows from
-    ///    the store's bank account into the citizen's account (the mirror of the
-    ///    v0.2 food purchase path). If no store buys, the goods stay in inventory
-    ///    and can later be consumed (food) or held (raw materials).
-    ///
-    /// The mod never injects items into world inventories or store stock; all item
-    /// flow happens inside the citizen ledger, but the money movement is real.
+    ///  - Listing: produced goods feed the citizen's own simulated store (mod
+    ///    internal). Nothing is ever sold to a real StoreComponent - real stores
+    ///    are player-only. When the citizen owns no open sim store the goods stay
+    ///    in inventory and can later be consumed (food) or held (raw materials).
     /// </summary>
     public static class CitizenProduction
     {
@@ -85,10 +82,12 @@ namespace EcoSimCitizens
         }
 
         /// <summary>
-        /// Produces goods for one working tick and stores them in the citizen's real
-        /// inventory ledger. Returns the item type name produced, or null.
+        /// Produces goods for one working tick: the item is added BOTH to the
+        /// citizen's ledger and - when the NPC world object is available - to its
+        /// real PublicStorageComponent backpack, so players can open the NPC and see
+        /// actual crafted goods appear. Returns the item type name produced, or null.
         /// </summary>
-        public static string Produce(Citizen c, double productionUnits, double productivity)
+        public static string Produce(Citizen c, double productionUnits, double productivity, CitizenNpc npc = null)
         {
             try
             {
@@ -102,6 +101,20 @@ namespace EcoSimCitizens
                 int total = SimulationLogic.InventoryAdd(c.Inventory, typeName, qty);
                 c.ItemsProduced += qty;
                 CitizenSocial.AddTrail(c, $"produced {qty} {typeName} (now {total})");
+
+                // Mirror into the real backpack so the work is visible in the world.
+                if (npc != null)
+                {
+                    try
+                    {
+                        var inv = npc.GetComponent<PublicStorageComponent>()?.Inventory;
+                        if (inv != null) inv.AddItems(item, qty, null);
+                    }
+                    catch (Exception invEx)
+                    {
+                        PluginLog.Warn($"CitizenProduction: real backpack add failed for {c.Name}: {invEx.Message}");
+                    }
+                }
                 return typeName;
             }
             catch (Exception ex)
@@ -112,92 +125,60 @@ namespace EcoSimCitizens
         }
 
         /// <summary>
-        /// Tries to sell the citizen's real inventory to real store buying offers.
-        /// Returns the amount of real currency earned this tick.
+        /// Feeds the citizen's own simulated store (mod-internal) from its produced
+        /// inventory. Returns the number of units restocked this tick. No real
+        /// StoreComponent is touched and no real money flows here - sales revenue is
+        /// settled later in SimStoreManager.TryBuyFood between NPC accounts. When the
+        /// NPC world object is available the matching real items are also removed from
+        /// its backpack so the visible inventory stays in sync with the ledger.
         /// </summary>
-        public static double SellProduced(Citizen c)
+        public static double SellProduced(Citizen c, CitizensDatabase db, CitizenNpc npc = null)
         {
-            if (c.Inventory == null || c.Inventory.Count == 0) return 0;
-            double earned = 0;
+            if (c == null || c.Inventory == null || c.Inventory.Count == 0) return 0;
+            double stocked = 0;
             try
             {
                 foreach (var kv in new List<KeyValuePair<string, int>>(c.Inventory))
                 {
                     if (kv.Value <= 0) continue;
-                    double sold = SellOneType(c, kv.Key, kv.Value);
-                    if (sold > 0)
+                    var store = db.FindOpenStoreOf(c.Name, kv.Key);
+                    if (store == null) continue;
+                    int qtyToStock = Math.Min(kv.Value, 8); // a handful per tick
+                    int removed = SimulationLogic.InventoryRemove(c.Inventory, kv.Key, qtyToStock);
+                    if (removed <= 0) continue;
+                    // Mirror the removal into the real backpack.
+                    if (npc != null && removed > 0)
                     {
-                        earned += sold;
-                        CitizenSocial.AddTrail(c, $"sold {kv.Key} to a store");
+                        try
+                        {
+                            var inv = npc.GetComponent<PublicStorageComponent>()?.Inventory;
+                            if (inv != null)
+                            {
+                                Type t = null;
+                                foreach (var item in Item.AllItemsExceptHidden)
+                                {
+                                    if (item != null && item.Type != null && item.Type.Name == kv.Key) { t = item.Type; break; }
+                                }
+                                if (t != null && inv.TypeToCount.TryGetValue(t, out var have) && have > 0)
+                                    inv.RemoveItems(t, Math.Min(removed, have), null);
+                            }
+                        }
+                        catch (Exception invEx)
+                        {
+                            PluginLog.Warn($"CitizenProduction: real backpack remove failed for {c.Name}: {invEx.Message}");
+                        }
                     }
+                    store.Stock += removed;
+                    stocked += removed;
+                    c.TradeSellVolume += removed;
+                    CitizenSocial.AddTrail(c, $"stocked {removed} {kv.Key} at '{store.Name}'");
                 }
             }
             catch (Exception ex)
             {
                 PluginLog.Warn("CitizenProduction.SellProduced failed: " + ex.Message);
             }
-            return earned;
-        }
-
-        private static double SellOneType(Citizen c, string typeName, int qty)
-        {
-            try
-            {
-                Item item = Item.Get(typeName);
-                if (item == null) return 0;
-
-                double bestPrice = 0;
-                StoreComponent bestStore = null;
-                foreach (var wo in PluginManager.GetPlugin<WorldObjectManager>().All)
-                {
-                    if (wo == null || wo.IsDestroyed) continue;
-                    StoreComponent store = null;
-                    try { store = wo.GetComponent("StoreComponent") as StoreComponent; }
-                    catch { }
-                    if (store == null || store.IsBarter || store.BankAccount == null) continue;
-
-                    foreach (var offer in store.AllOffers)
-                    {
-                        if (offer == null || !offer.Buying || !offer.HasPrice || offer.Price <= 0) continue;
-                        if (offer.Price <= bestPrice) continue;
-                        try
-                        {
-                            if (offer.MatchesItem(item))
-                            {
-                                bestPrice = offer.Price;
-                                bestStore = store;
-                            }
-                        }
-                        catch { }
-                    }
-                }
-
-                if (bestStore == null || bestPrice <= 0) return 0;
-
-                int qtyToSell = Math.Min(qty, 8); // a citizen only sells a handful per tick
-                int removed = SimulationLogic.InventoryRemove(c.Inventory, typeName, qtyToSell);
-                if (removed <= 0) return 0;
-
-                double total = bestPrice * removed;
-                var acc = CitizenEconomy.AccountFor(c.Name);
-                var cur = bestStore.Currency;
-                if (cur == null)
-                {
-                    SimulationLogic.InventoryAdd(c.Inventory, typeName, removed);
-                    return 0;
-                }
-                bestStore.BankAccount.AddCurrency(cur, (float)-total, false);
-                acc.AddCurrency(cur, (float)total, false);
-                c.ItemsSold += removed;
-                c.RealEarned += total;
-                c.LedgerBalance += total;
-                return total;
-            }
-            catch (Exception ex)
-            {
-                PluginLog.Warn("SellOneType failed: " + ex.Message);
-                return 0;
-            }
+            return stocked;
         }
     }
 }

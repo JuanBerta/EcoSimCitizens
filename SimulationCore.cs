@@ -74,7 +74,7 @@ namespace EcoSimCitizens
         /// <summary>Advances the simulation one tick. Returns citizens who died this tick.</summary>
         public List<Citizen> Tick(CitizensDatabase db, ModConfig cfg)
         {
-            var market = _market.Scan();
+            var market = _market.Scan(db);
             var civic = _civic.Observe();
             var citizens = db.Snapshot();
             var died = new List<Citizen>();
@@ -95,6 +95,12 @@ namespace EcoSimCitizens
                 {
                     PluginLog.Warn($"Tick failed for citizen '{c.Name}': {ex.Message}");
                 }
+            }
+
+            // --- v0.5 autonomous shop economy: restock, reprice, upgrade, open/close ---
+            if (cfg.SimShopsEnabled)
+            {
+                SimStoreManager.TickShops(db, cfg, market);
             }
 
             // --- world-level systems (after citizen work feeds industry) ---
@@ -150,6 +156,7 @@ namespace EcoSimCitizens
                 }
             }
             if (died.Count > 0) db.Save();
+            db.SaveThrottled(cfg.SaveThrottleSeconds);
 
             LastMarket = market;
             LastCivic = civic;
@@ -208,7 +215,8 @@ namespace EcoSimCitizens
             {
                 Pool.NoteMove(true);
                 if (!c.HasWorkplace) CitizenCommute.EnsureWorkplace(c, npc);
-                npc.BehaviorTick(c, phase);
+                npc.ComputeGoal(c, phase, market.SimStorePositions);
+                npc.BehaviorTick();
                 if (!c.HasBeenFunded)
                 {
                     CitizenEconomy.GrantStartFunds(c.Name, (float)cfg.StartingBalance);
@@ -244,7 +252,7 @@ namespace EcoSimCitizens
 
                 if (cfg.ProductionEnabled)
                 {
-                    CitizenProduction.Produce(c, cfg.ProductionUnitsPerTick, productivity * workFraction);
+                    CitizenProduction.Produce(c, cfg.ProductionUnitsPerTick, productivity * workFraction, npc);
                 }
 
                 // --- v0.4: work party contribution (contracts & shared milestones) ---
@@ -300,10 +308,10 @@ namespace EcoSimCitizens
                 }
             }
 
-            // --- sell produced goods to real stores ---
+            // --- sell produced goods to the citizen's own simulated store ---
             if (cfg.SellEnabled)
             {
-                CitizenProduction.SellProduced(c);
+                CitizenProduction.SellProduced(c, db);
             }
 
             // --- v0.4: comparative-advantage commerce (materials & calorie-value food) ---
@@ -312,7 +320,7 @@ namespace EcoSimCitizens
                 AgentCommerce.TickCommerce(c, cfg, market);
             }
 
-            // --- consume: eat from own inventory first, then real purchases ---
+            // --- consume: eat from own inventory first, then from simulated shops ---
             if (c.Calories < 65)
             {
                 int need = (int)Math.Ceiling((65 - c.Calories) / cfg.CalorieGainFromFood);
@@ -321,16 +329,14 @@ namespace EcoSimCitizens
                 {
                     c.Calories = SimMath.Clamp(c.Calories + ate * cfg.CalorieGainFromFood, 0, 100);
                 }
-                else if (npc != null)
+                else if (SimStoreManager.TryBuyFood(c, db, cfg, out float _))
                 {
-                    if (CitizenEconomy.TryBuyCheapestFood(c.Name, out float spent))
-                    {
-                        c.Calories = SimMath.Clamp(c.Calories + cfg.CalorieGainFromFood, 0, 100);
-                        c.LedgerBalance -= spent;
-                    }
+                    c.Calories = SimMath.Clamp(c.Calories + cfg.CalorieGainFromFood, 0, 100);
                 }
                 else if (market.HasMarket && market.FoodOfferCount > 0 && market.MinPrice > 0)
                 {
+                    // last-resort ledger fallback: mirrors the cheapest real offer as a
+                    // mod-internal book entry - never touches a real StoreComponent.
                     double cost = market.MinPrice * cfg.FoodSpendFactor;
                     if (c.LedgerBalance >= cost)
                     {
@@ -338,6 +344,12 @@ namespace EcoSimCitizens
                         c.LedgerBalance -= cost;
                     }
                 }
+            }
+
+            // --- v0.5 autonomous shop ownership: open / upgrade when affordable ---
+            if (cfg.SimShopsEnabled && c.IsAlive)
+            {
+                SimStoreManager.EnsureShopFor(c, db, cfg);
             }
 
             // --- housing: deed-derived comfort ---
@@ -528,6 +540,13 @@ namespace EcoSimCitizens
 
             // --- v0.4 system summary ---
             sb.AppendLine($"Parties: {sim.WorkParties.Parties.Count} ({sim.WorkParties.MilestonesCompleted} milestones) | Corps: {sim.Corporations.Corporations.Count} | Currencies: {sim.Currencies.Currencies.Count} | Listings: {sim.Exchange.Listings.Count} | Futures: {sim.Exchange.Futures.Count}");
+
+            // --- v0.5 simulated shop economy (NPC-only, mod-internal settlement) ---
+            try
+            {
+                sb.AppendLine($"Sim stores: {db.SimStores.Count} open, {db.SimStores.Where(s => !s.IsOpen).Count()} closed | offers {db.SimStores.Where(s => s.IsOpen).Sum(s => s.Stock)} units | trades {db.SimStores.Sum(s => s.TradesSettled)} settled");
+            }
+            catch { }
             sb.AppendLine($"Research: {sim.Research.DomainPoints.Count} domains, {sim.Research.DiscoveriesUnlocked} discoveries | Pool: {sim.Pool.ActiveNpcCount}/{sim.Pool.MaxActiveNpcs} NPCs, physical pathfinding {sim.Pool.PhysicalPathfindingRatio():0.0%}");
             if (cfg.EnvironmentEnabled)
             {
