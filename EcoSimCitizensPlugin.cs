@@ -145,6 +145,11 @@ namespace EcoSimCitizens
                 try
                 {
                     LogDebug("StartLoop: begin");
+                    // v0.9 self-heal: destroy registered Workbench/ToolBench (bad
+                    // CreditComponent from ForceAdd) while the WMO parallel init
+                    // loop is still running, then persist the registry cleanup.
+                    try { NpcManager.SelfHealPlacedObjects(); }
+                    catch (Exception ex) { PluginLog.Warn("Self-heal failed: " + ex.Message); }
                     ModConfig.Instance.Load();
                     LogDebug("StartLoop: config loaded");
                     _database.Load();

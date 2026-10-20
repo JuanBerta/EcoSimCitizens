@@ -236,6 +236,19 @@ namespace EcoSimCitizens
             }
         }
 
+        /// <summary>Remove registered objects matching a predicate (used by the
+        /// v0.9 startup self-heal, which drops bad Workbench/ToolBench records).</summary>
+        public int RemovePlacedObjectsWhere(Predicate<PlacedObject> predicate)
+        {
+            if (predicate == null) return 0;
+            lock (_lock)
+            {
+                int removed = _placedObjects.RemoveAll(predicate);
+                if (removed > 0) _dirty = true;
+                return removed;
+            }
+        }
+
         // ------------------------------------------------------------ persistence
 
         /// <summary>

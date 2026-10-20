@@ -241,6 +241,65 @@ namespace EcoSimCitizens
         }
 
         /// <summary>
+        /// v0.9 startup self-heal: the world save from before the v0.8 fix contains
+        /// Workbench/ToolBench objects that were ForceAdd-placed while their
+        /// CreditComponent.BankAccount was still null. Once serialized they throw
+        /// NullReferenceException in CreditComponent.Initialize during
+        /// WorldObjectManager load, which kills the server at startup.
+        /// This runs from plugin Initialize, which executes while the WMO parallel
+        /// init loop is still in flight, and destroys every registered
+        /// Workbench/ToolBench before (or as soon as) the loop reaches it.
+        /// Safety: only objects in the PlacedObject registry (mod-placed NPC
+        /// facilities) are candidates - player-built objects are never touched,
+        /// and registered Camp/Campfire/Stockpile are kept.
+        /// </summary>
+        public static DespawnStats SelfHealPlacedObjects()
+        {
+            var stats = new DespawnStats();
+            var db = EcoSimCitizens.Instance?.Database;
+            if (db == null)
+            {
+                PluginLog.Warn("SelfHealPlacedObjects: database not ready, skipped");
+                return stats;
+            }
+            try
+            {
+                bool IsBadType(PlacedObject r) =>
+                    r.TypeName == "WorkbenchObject" || r.TypeName == "ToolBenchObject";
+
+                var bad = db.PlacedObjectsSnapshot().Where(IsBadType).ToList();
+                if (bad.Count == 0)
+                {
+                    EcoSimCitizens.LogDebug("SelfHealPlacedObjects: no bad registered Workbench/ToolBench found");
+                    return stats;
+                }
+                foreach (var rec in bad)
+                {
+                    var wo = FindByWoId(rec.WoId);
+                    if (wo != null && !wo.IsDestroyed)
+                    {
+                        try { wo.Destroy(); stats.Facilities++; }
+                        catch (Exception ex) { PluginLog.Warn($"SelfHealPlacedObjects: destroy failed ({rec.TypeName} {rec.WoId}): {ex.Message}"); }
+                    }
+                    else
+                    {
+                        PluginLog.Info($"SelfHealPlacedObjects: registered {rec.TypeName} {rec.WoId} not found in world (already gone)");
+                    }
+                }
+                int removed = db.RemovePlacedObjectsWhere(IsBadType);
+                stats.Structures = removed;
+                try { db.Save(); } catch (Exception ex) { PluginLog.Warn("SelfHealPlacedObjects: save failed: " + ex.Message); }
+                PluginLog.Info($"SelfHealPlacedObjects: destroyed {stats.Facilities}, removed {removed} registry entries (Workbench/ToolBench credit-bad objects)");
+                EcoSimCitizens.LogDebug($"SelfHealPlacedObjects: destroyed {stats.Facilities}, removed {removed} registry entries (Workbench/ToolBench credit-bad objects)");
+            }
+            catch (Exception ex)
+            {
+                PluginLog.Warn("SelfHealPlacedObjects failed: " + ex.Message);
+            }
+            return stats;
+        }
+
+        /// <summary>
         /// v0.8 /npccmd fixfloating: scans NPC-relevant world objects (registered
         /// mod-placed facilities plus the known attachment types) and moves any
         /// that float more than <paramref name="toleranceM"/> above the terrain
