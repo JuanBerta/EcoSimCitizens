@@ -128,9 +128,11 @@ namespace EcoSimCitizens
         /// Feeds the citizen's own simulated store (mod-internal) from its produced
         /// inventory. Returns the number of units restocked this tick. No real
         /// StoreComponent is touched and no real money flows here - sales revenue is
-        /// settled later in SimStoreManager.TryBuyFood between NPC accounts. When the
-        /// NPC world object is available the matching real items are also removed from
-        /// its backpack so the visible inventory stays in sync with the ledger.
+        /// settled later in SimStoreManager.TryBuyFood between NPC accounts. Real
+        /// backpack items are intentionally NOT mirrored out when stocking the sim
+        /// store (v1.0): the ledger tracks sim-store stock, while the physical
+        /// backpack holds the actual goods players can see - removing them here made
+        /// visible NPC inventory mysteriously empty.
         /// </summary>
         public static double SellProduced(Citizen c, CitizensDatabase db, CitizenNpc npc = null)
         {
@@ -146,28 +148,6 @@ namespace EcoSimCitizens
                     int qtyToStock = Math.Min(kv.Value, 8); // a handful per tick
                     int removed = SimulationLogic.InventoryRemove(c.Inventory, kv.Key, qtyToStock);
                     if (removed <= 0) continue;
-                    // Mirror the removal into the real backpack.
-                    if (npc != null && removed > 0)
-                    {
-                        try
-                        {
-                            var inv = npc.GetComponent<PublicStorageComponent>()?.Inventory;
-                            if (inv != null)
-                            {
-                                Type t = null;
-                                foreach (var item in Item.AllItemsExceptHidden)
-                                {
-                                    if (item != null && item.Type != null && item.Type.Name == kv.Key) { t = item.Type; break; }
-                                }
-                                if (t != null && inv.TypeToCount.TryGetValue(t, out var have) && have > 0)
-                                    inv.RemoveItems(t, Math.Min(removed, have), null);
-                            }
-                        }
-                        catch (Exception invEx)
-                        {
-                            PluginLog.Warn($"CitizenProduction: real backpack remove failed for {c.Name}: {invEx.Message}");
-                        }
-                    }
                     store.Stock += removed;
                     stocked += removed;
                     c.TradeSellVolume += removed;

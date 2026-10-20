@@ -6,6 +6,8 @@ using Eco.Gameplay.Components.Storage;
 using Eco.Gameplay.Items;
 using Eco.Gameplay.Objects;
 using Eco.Gameplay.Players;
+using Eco.Simulation;
+using Eco.Simulation.Agents;
 using Eco.Shared.Math;
 using Eco.Shared.Time;
 
@@ -20,11 +22,14 @@ namespace EcoSimCitizens
     ///    (LogItem / PlantFibersItem / StoneItem / DirtItem...) straight into its
     ///    PublicStorageComponent backpack. This makes NPC work visible and real:
     ///    items appear in the backpack / camp chest instead of a hidden ledger.
-    ///  - Camp storage usage: near its own tent the NPC deposits produced goods into
-    ///    the camp chest and re-arms missing kit tools (see SurvivalKit.SyncWithCampStorage).
+    ///  - Camp storage usage: near its own stockpile the NPC deposits produced goods
+    ///    into the chest and re-arms missing kit tools (see SurvivalKit.SyncWithCampStorage).
     ///
-    /// Resource types are matched by runtime type name (Eco.Mods.Organisms) so this
-    /// file never needs a compile-time reference to organism classes.
+    /// v1.0: resources are read from EcoSim.PlantSim (the real simulation layer)
+    /// and matched by Species.Name. The previous WorldObjectManager-based scan
+    /// could never match trees/plants because they are Simulation-layer Organisms
+    /// (Eco.Simulation.Agents.Plant), not WorldObjects - that is why NPCs never
+    /// gathered.
     /// </summary>
     public static class CitizenRoutine
     {
@@ -91,7 +96,8 @@ namespace EcoSimCitizens
                     return true;
                 }
 
-                var itemType = HarvestItemTypeFor(resource.GetType().Name);
+                string speciesName = resource.Species?.Name;
+                var itemType = HarvestItemTypeFor(speciesName);
                 if (itemType == null) return false;
 
                 var item = Item.Get(itemType);
@@ -109,7 +115,7 @@ namespace EcoSimCitizens
                     c.ItemsProduced += qty;
                 }
 
-                EcoSimCitizens.LogDebug($"{npc.CitizenName} harvested {qty} {itemType.Name} near {resource.GetType().Name}");
+                EcoSimCitizens.LogDebug($"{npc.CitizenName} harvested {qty} {itemType.Name} near {speciesName}");
                 // Stay on the spot: the next throttled routine call re-targets the
                 // next resource or the arrival path keeps gathering this one.
                 return true;
@@ -121,26 +127,31 @@ namespace EcoSimCitizens
             }
         }
 
-        /// <summary>Nearest alive resource object within radius, else null.</summary>
-        private static WorldObject FindNearestHarvestable(Vector3 pos, float radius)
+        /// <summary>
+        /// Nearest alive matching resource (real Simulation-layer Plant) within
+        /// radius, else null. Trees/bushes/crops are Eco.Simulation.Agents.Plant
+        /// Organisms - they are NOT WorldObjects, so the old WorldObjectManager
+        /// scan always returned null and NPCs never gathered.
+        /// </summary>
+        private static Plant FindNearestHarvestable(Vector3 pos, float radius)
         {
-            WorldObject best = null;
+            Plant best = null;
             float bestDist = float.MaxValue;
             try
             {
-                var manager = PluginManager.GetPlugin<WorldObjectManager>();
-                if (manager == null) return null;
-                foreach (var wo in manager.All)
+                var plantSim = EcoSim.PlantSim;
+                if (plantSim == null) return null;
+                foreach (var plant in plantSim.All)
                 {
-                    if (wo == null || wo.IsDestroyed) continue;
-                    string n = wo.GetType().Name;
+                    if (plant == null || !plant.Alive || plant.Dead) continue;
+                    string n = plant.Species?.Name;
                     if (n == null) continue;
                     if (!TreeTypeNames.Contains(n) && !PlantTypeNames.Contains(n)) continue;
-                    float d = Vector3.Distance(pos, wo.Position);
+                    float d = Vector3.Distance(pos, plant.Position);
                     if (d <= radius && d < bestDist)
                     {
                         bestDist = d;
-                        best = wo;
+                        best = plant;
                     }
                 }
             }
@@ -151,11 +162,11 @@ namespace EcoSimCitizens
             return best;
         }
 
-        private static Type HarvestItemTypeFor(string resourceTypeName)
+        private static Type HarvestItemTypeFor(string speciesName)
         {
-            if (resourceTypeName == null) return null;
-            bool tree = TreeTypeNames.Contains(resourceTypeName);
-            bool plant = PlantTypeNames.Contains(resourceTypeName);
+            if (speciesName == null) return null;
+            bool tree = TreeTypeNames.Contains(speciesName);
+            bool plant = PlantTypeNames.Contains(speciesName);
             if (!tree && !plant) return null;
             try
             {

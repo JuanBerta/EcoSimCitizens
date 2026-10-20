@@ -13,25 +13,29 @@ using Quaternion = Eco.Shared.Math.Quaternion;
 namespace EcoSimCitizens
 {
     /// <summary>
-    /// Grants citizens the same starter kit a fresh player receives and lets them
-    /// attempt their first settlement.
+    /// Grants citizens a "stake claim + adobe-era camp" starter kit instead of the
+    /// vanilla starter tent.
     ///
-    /// Delivered kit (matches Eco PlayerDefaults):
-    ///   - backpack:   Starter Camp x1, Claim Paper x4
-    ///   - camp/tent:  Claim Paper x6, Claim Tool x1, Stone Axe x1,
+    /// Delivered kit:
+    ///   - backpack:   Town Claim Stake x1 (the claim stake item, matches the
+    ///                 t1/t2 "stake claim" request), Claim Paper x4
+    ///   - inventory:  Claim Paper x6, Claim Tool x1, Stone Axe x1,
     ///                 Wooden Shovel x1 (Eco 0.14 has no StoneShovelItem),
-    ///                 Stone Hammer x1, Stone Pickaxe x1
+    ///                 Stone Hammer x1, Stone Pickaxe x1 (held in the placed
+    ///                 stockpile - the citizen's own inventory object)
     ///
-    /// Placement flow: Starter Camp next to the NPC, then Campfire + Stockpile
-    /// a few meters away. Claiming real property and creating stores are player
-    /// interactions that require a User identity (Deed / PropertyAuthComponent /
-    /// ForSaleComponent), so the kit only hands out the claim papers and tool and
-    /// places the physical campfire/stockpile; deed/store creation stays out of
-    /// scope. Workbench/ToolBench are NOT placed anymore (v0.9): craft stations
-    /// pull in CreditComponent (CraftingComponent -&gt; CreditComponent) and objects
-    /// created via WorldObjectManager.ForceAdd carry a dangling BankAccount owner
-    /// reference that throws NullReferenceException in CreditComponent.Initialize
-    /// on the next world load, crashing the server.
+    /// Placement flow: NO starter tent. An open Campfire sits 4 m from the NPC
+    /// and a Stockpile (the citizen's physical inventory / storage object) 9 m
+    /// away. The claim stake is handed over as an item in the backpack (placing
+    /// real claim stakes requires a User identity / Deed settlement that the NPC
+    /// cannot own as a WorldObject). Real t1/t2 adobe houses cannot be ForceAdd
+    /// safely either (world-placement of structural blocks needs construction
+    /// context), so the "house" is represented by the campfire + stockpile camp
+    /// cluster and reported honestly. Workbench/ToolBench remain NOT placed
+    /// (v0.9): craft stations pull in CreditComponent (CraftingComponent -&gt;
+    /// CreditComponent) and objects created via WorldObjectManager.ForceAdd carry
+    /// a dangling BankAccount owner reference that throws NullReferenceException
+    /// in CreditComponent.Initialize on the next world load, crashing the server.
     ///
     /// Everything is idempotent: existing items are never duplicated, already
     /// placed objects are never placed twice, and failures are logged but never
@@ -39,15 +43,17 @@ namespace EcoSimCitizens
     /// </summary>
     public static class SurvivalKit
     {
-        // Player starter backpack (Eco PlayerDefaults.GetDefaultInventory).
+        // v1.0 starter backpack: claim stake item + claim papers instead of the
+        // vanilla Starter Camp item.
         private static readonly (Type type, int qty)[] BackpackKit =
         {
-            (typeof(StarterCampItem), 1),
+            (typeof(TownClaimStakeItem), 1),
             (typeof(ClaimPaperItem), 4),
         };
 
-        // Player starter camp storage (Eco PlayerDefaults.GetDefaultCampsiteInventory).
-        // Eco 0.14 removed the Stone Shovel; Wooden Shovel is the tier-1 shovel.
+        // Starter tool inventory, kept in the placed stockpile (the citizen's own
+        // inventory object). Eco 0.14 removed the Stone Shovel; Wooden Shovel is
+        // the tier-1 shovel.
         private static readonly (Type type, int qty)[] CampKit =
         {
             (typeof(ClaimPaperItem), 6),
@@ -58,12 +64,13 @@ namespace EcoSimCitizens
             (typeof(StonePickaxeItem), 1),
         };
 
-        private const float CampRadius = 8f;    // camp considered present if within this distance
-        private const float StationRadius = 15f; // workstation considered present if within this distance
+        private const float StationRadius = 15f; // station considered present if within this distance
 
         /// <summary>
         /// Idempotent entry point: ensures the NPC has a backpack with the starter
-        /// kit, then attempts the first settlement (camp + workstations).
+        /// kit (claim stake + claim papers), then sets up its first camp: an open
+        /// campfire, a stockpile (the citizen's own inventory) with the starter
+        /// tool kit, and campfire supplies.
         /// </summary>
         public static void GrantToNpc(CitizenNpc npc, User creator)
         {
@@ -72,21 +79,16 @@ namespace EcoSimCitizens
             {
                 EnsureBackpackKit(npc, creator);
 
-                // First settlement: camp, then workstations near the camp.
-                var camp = EnsureCamp(npc, creator);
-                var campPos = camp != null ? camp.Position : npc.Position;
+                // First settlement (v1.0): no vanilla starter tent. Campfire +
+                // stockpile a few metres from the NPC; the stockpile is the
+                // citizen's physical inventory object and holds its tool kit.
+                // Workbench/ToolBench placement stays removed (v0.9 credit crash).
+                var center = npc.Position;
 
-                EnsureCampKit(npc, camp, creator);
-                // v0.9: Workbench/ToolBench placement removed - craft stations pull
-                // in CreditComponent and ForceAdd-created copies crash with a
-                // NullReferenceException in CreditComponent.Initialize on reload
-                // (log_261020121654). Campfire/Stockpile carry no credit dependency.
-                // Campfire cooking: an open campfire 4m from the camp plus a
-                // stockpile with fuel and ready campfire food (Charred Meat), so the
-                // citizen can cook/eat campfire food at its own camp.
-                EnsureStation(npc, typeof(CampfireObject), creator, campPos, 4.0f, "Campfire");
-                EnsureStation(npc, typeof(StockpileObject), creator, campPos, 9.0f, "Stockpile");
-                EnsureCampfireSupplies(npc, campPos, creator);
+                EnsureStation(npc, typeof(CampfireObject), creator, center, 4.0f, "Campfire");
+                var stockpile = EnsureStation(npc, typeof(StockpileObject), creator, center, 9.0f, "Stockpile");
+                EnsureInventoryKit(npc, stockpile, creator);
+                EnsureCampfireSupplies(npc, center, creator);
             }
             catch (Exception ex)
             {
@@ -126,32 +128,22 @@ namespace EcoSimCitizens
             PluginLog.Info($"{npc.CitizenName}: backpack starter kit ensured ({added} item added)");
         }
 
-        // ------------------------------------------------------------- camp
+        // ------------------------------------------------------------- inventory
 
-        private static StarterCampObject EnsureCamp(CitizenNpc npc, User creator)
+        /// <summary>
+        /// Places the starter tool kit into the citizen's stockpile inventory
+        /// (the physical inventory object); falls back to the NPC backpack when no
+        /// stockpile could be placed.
+        /// </summary>
+        private static void EnsureInventoryKit(CitizenNpc npc, WorldObject stockpile, User creator)
         {
-            // Already has a camp nearby? Keep it (idempotent across restarts).
-            var existing = FindNearby<StarterCampObject>(npc.Position, CampRadius);
-            if (existing != null)
-            {
-                PluginLog.Info($"{npc.CitizenName}: camp already placed nearby");
-                return existing;
-            }
-
-            return TryPlace(npc, typeof(StarterCampObject), creator, npc.Position, 0f, "StarterCamp", true) as StarterCampObject;
-        }
-
-        private static void EnsureCampKit(CitizenNpc npc, StarterCampObject camp, User creator)
-        {
-            // Camp storage first (the tent's own inventory when present), else keep
-            // the camp kit in the NPC backpack.
-            var targetInv = camp?.GetComponent<StorageComponent>()?.Inventory;
+            var targetInv = (stockpile as StockpileObject)?.GetComponent<StorageComponent>()?.Inventory;
             if (targetInv != null)
             {
                 int added = 0;
                 foreach (var entry in CampKit)
                     added += EnsureItems(targetInv, entry.type, entry.qty, creator);
-                PluginLog.Info($"{npc.CitizenName}: camp storage kit ensured ({added} item added)");
+                PluginLog.Info($"{npc.CitizenName}: stockpile inventory kit ensured ({added} item added)");
             }
             else
             {
@@ -160,21 +152,21 @@ namespace EcoSimCitizens
                 {
                     foreach (var entry in CampKit)
                         EnsureItems(inv, entry.type, entry.qty, creator);
-                    PluginLog.Info($"{npc.CitizenName}: camp has no own storage, camp kit kept in backpack");
+                    PluginLog.Info($"{npc.CitizenName}: no stockpile inventory, tool kit kept in backpack");
                 }
             }
         }
 
         // ------------------------------------------------------------- stations
 
-        private static void EnsureStation(CitizenNpc npc, Type objectType, User creator, Vector3 campPos, float offset, string label)
+        private static WorldObject EnsureStation(CitizenNpc npc, Type objectType, User creator, Vector3 campPos, float offset, string label)
         {
             if (FindNearby(objectType, campPos, StationRadius) != null)
             {
                 PluginLog.Info($"{npc.CitizenName}: {label} already placed nearby");
-                return;
+                return null;
             }
-            TryPlace(npc, objectType, creator, campPos, offset, label, false);
+            return TryPlace(npc, objectType, creator, campPos, offset, label, false);
         }
 
         /// <summary>
@@ -355,21 +347,19 @@ namespace EcoSimCitizens
         };
 
         /// <summary>
-        /// Makes the NPC genuinely "use" the small camp storage box: whenever the
-        /// citizen is near its own tent it deposits produced goods / raw materials
-        /// into the camp chest (respecting capacity) and re-arms any missing kit
-        /// tool from the chest back into the backpack. Pure server-side inventory
-        /// operations - no player auth involved, so NPCs can always use the box.
-        /// Returns (deposited, takenBack) item counts.
+        /// Makes the NPC genuinely "use" its inventory stockpile: whenever the
+        /// citizen is near its own stockpile it deposits produced goods / raw
+        /// materials into the chest (respecting capacity) and re-arms any missing
+        /// kit tool from the chest back into the backpack. Pure server-side
+        /// inventory operations - no player auth involved, so NPCs can always use
+        /// the box. Returns (deposited, takenBack) item counts.
         /// </summary>
         public static (int deposited, int takenBack) SyncWithCampStorage(CitizenNpc npc, User creator)
         {
             try
             {
                 if (npc == null) return (0, 0);
-                var camp = FindNearby<StarterCampObject>(npc.Position, CampRadius);
-                if (camp == null) return (0, 0);
-                var chest = camp.GetComponent<StorageComponent>()?.Inventory;
+                var chest = FindNearby<StockpileObject>(npc.Position, StationRadius)?.GetComponent<StorageComponent>()?.Inventory;
                 var backpack = npc.GetComponent<PublicStorageComponent>()?.Inventory;
                 if (chest == null || backpack == null) return (0, 0);
 
@@ -377,7 +367,8 @@ namespace EcoSimCitizens
                 int taken = 0;
 
                 // --- deposit produced goods / raw materials (never kit tools, claim
-                // paper, camp item or food - food is reserved for personal use) ---
+                // paper, the claim stake item or food - food is reserved for
+                // personal use) ---
                 foreach (var stack in new List<ItemStack>(backpack.Stacks))
                 {
                     if (deposited >= 4) break; // a handful per sync
@@ -429,7 +420,7 @@ namespace EcoSimCitizens
         {
             foreach (var kit in KitToolTypes)
                 if (kit == t) return true;
-            if (t == typeof(StarterCampItem)) return true;
+            if (t == typeof(TownClaimStakeItem)) return true;
             string n = t.Name.ToLowerInvariant();
             return SimulationLogic.IsFoodItem(n);
         }

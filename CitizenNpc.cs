@@ -40,7 +40,7 @@ namespace EcoSimCitizens
         [Serialized] public string Headline;
 
         // --- v0.5 independent goal system: each NPC has its own target ---
-        [Serialized] public string GoalType;   // Home / Work / Shop / Social / Wander
+        [Serialized] public string GoalType;   // Home / Work / Shop / Social / Wander / Gather
         [Serialized] public float GoalX;
         [Serialized] public float GoalY;
         [Serialized] public float GoalZ;
@@ -197,6 +197,12 @@ namespace EcoSimCitizens
                 SetGoal("Home", HomeX, HomeY, HomeZ);
                 return;
             }
+
+            // v1.0: while actively gathering, keep the gather goal until the
+            // routine finishes the current resource (otherwise the next slow tick
+            // overrides the goal to Work/Shop/Social and the NPC abandons the
+            // harvest mid-walk - the old "never gathers" symptom).
+            if (GoalType == "Gather") return;
 
             // cooldown: keep the current goal until NextWanderUtc passes
             if (now < NextWanderUtc) return;
