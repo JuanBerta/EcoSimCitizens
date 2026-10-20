@@ -22,11 +22,16 @@ namespace EcoSimCitizens
     ///                 Wooden Shovel x1 (Eco 0.14 has no StoneShovelItem),
     ///                 Stone Hammer x1, Stone Pickaxe x1
     ///
-    /// Placement flow: Starter Camp next to the NPC -&gt; Workbench and Tool Bench
+    /// Placement flow: Starter Camp next to the NPC, then Campfire + Stockpile
     /// a few meters away. Claiming real property and creating stores are player
     /// interactions that require a User identity (Deed / PropertyAuthComponent /
     /// ForSaleComponent), so the kit only hands out the claim papers and tool and
-    /// places the physical workstations; deed/store creation stays out of scope.
+    /// places the physical campfire/stockpile; deed/store creation stays out of
+    /// scope. Workbench/ToolBench are NOT placed anymore (v0.9): craft stations
+    /// pull in CreditComponent (CraftingComponent -&gt; CreditComponent) and objects
+    /// created via WorldObjectManager.ForceAdd carry a dangling BankAccount owner
+    /// reference that throws NullReferenceException in CreditComponent.Initialize
+    /// on the next world load, crashing the server.
     ///
     /// Everything is idempotent: existing items are never duplicated, already
     /// placed objects are never placed twice, and failures are logged but never
@@ -72,11 +77,10 @@ namespace EcoSimCitizens
                 var campPos = camp != null ? camp.Position : npc.Position;
 
                 EnsureCampKit(npc, camp, creator);
-                // Workstations live OUTSIDE the tent (offset 5m / 7m from camp centre,
-                // 8 candidate directions, never the exact camp centre) so the interior
-                // keeps its open space. See StationOffsets.
-                EnsureStation(npc, typeof(WorkbenchObject), creator, campPos, 5.0f, "Workbench");
-                EnsureStation(npc, typeof(ToolBenchObject), creator, campPos, 7.0f, "ToolBench");
+                // v0.9: Workbench/ToolBench placement removed - craft stations pull
+                // in CreditComponent and ForceAdd-created copies crash with a
+                // NullReferenceException in CreditComponent.Initialize on reload
+                // (log_261020121654). Campfire/Stockpile carry no credit dependency.
                 // Campfire cooking: an open campfire 4m from the camp plus a
                 // stockpile with fuel and ready campfire food (Charred Meat), so the
                 // citizen can cook/eat campfire food at its own camp.

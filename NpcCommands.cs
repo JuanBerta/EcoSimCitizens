@@ -637,11 +637,16 @@ namespace EcoSimCitizens
         }
 
         [ChatSubCommand("npccmd", "Sell goods to an NPC - real native currency arrives in YOUR bank account", "shopsell", ChatAuthorizationLevel.User)]
-        public static void ShopSell(User user, string citizen, string item, int qty, double price)
+        public static void ShopSell(User user, string citizen, string item, int qty, string price)
         {
             if (!ModConfig.Instance.PlayerTradeEnabled) { ReplyError(user, "Player trade is disabled in config."); return; }
-            if (qty <= 0 || price <= 0) { ReplyError(user, "Quantity and price must be > 0."); return; }
-            ReplyOk(user, PlayerCommerce.PlayerSellToNpc(Plugin.Database, ModConfig.Instance, user, citizen, item, qty, price));
+            if (qty <= 0) { ReplyError(user, "Quantity must be > 0."); return; }
+            if (!double.TryParse(price, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double parsedPrice) || parsedPrice <= 0)
+            {
+                ReplyError(user, "Price must be a positive number.");
+                return;
+            }
+            ReplyOk(user, PlayerCommerce.PlayerSellToNpc(Plugin.Database, ModConfig.Instance, user, citizen, item, qty, parsedPrice));
         }
 
         [ChatSubCommand("npccmd", "Copy YOUR appearance onto an NPC (data-layer; NPC keeps its mannequin prefab)", "look", ChatAuthorizationLevel.Admin)]
