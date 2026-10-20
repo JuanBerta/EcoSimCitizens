@@ -188,6 +188,11 @@ namespace EcoSimCitizens
                 Reply(user, $"No deed named '{deed}' found in the property system.", NotificationStyle.Warning);
             }
             c.HomeDeedName = deed;
+            // v0.7: linking a real deed also names the citizen's homestead group.
+            if (ModConfig.Instance.HomesteadEnabled && string.IsNullOrEmpty(c.HomesteadName) && HousingEvaluator.FindDeed(deed) != null)
+            {
+                c.HomesteadName = deed + " Homestead";
+            }
             Plugin.Database.Save();
             ReplyOk(user, $"'{name}' now lives at deed '{deed}'.");
         }
@@ -227,7 +232,7 @@ namespace EcoSimCitizens
                 string skills = $"{CitizenSkills.GetLevel(c)}/{SimulationLogic.MaxLevel}";
                 sb.AppendLine($"  {c.Name} [{c.Profession}/{c.Trait}]");
                 sb.AppendLine($"    happiness {c.Happiness:0.0} | skill lvl {skills} | produced {c.ItemsProduced} sold {c.ItemsSold} | earn {c.RealEarned:0.00}");
-                sb.AppendLine($"    phase {c.CurrentPhase} | stage {stage} | age {c.AgeYears:0.0}y | home {(string.IsNullOrEmpty(c.SettlementName) ? (c.HasHome ? c.HomeDeedName : "-") : c.SettlementName)}");
+                sb.AppendLine($"    phase {c.CurrentPhase} | stage {stage} | age {c.AgeYears:0.0}y | home {(string.IsNullOrEmpty(c.SettlementName) ? (c.HasHome ? c.HomeDeedName : "-") : c.SettlementName)} | homestead {(!string.IsNullOrEmpty(c.HomesteadName) ? c.HomesteadName : "-")} | looks {(!string.IsNullOrEmpty(c.AppearanceSourcePlayer) ? "invoker:" + c.AppearanceSourcePlayer : "default")}");
             }
             ReplyOk(user, sb.ToString());
         }

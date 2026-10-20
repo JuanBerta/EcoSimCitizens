@@ -105,6 +105,17 @@ namespace EcoSimCitizens
         public double NpcMinSpacing { get; set; } = 75.0;   // minimum distance between two NPCs (metres)
         public double NpcSpawnRadius { get; set; } = -1.0;  // -1 = auto-detect from world size (fallback 350 m)
 
+        // --- v0.7: homestead/deed concept (mod-internal groups + native claim by invoker player) ---
+        public bool HomesteadEnabled { get; set; } = true;
+        public int HomesteadMaxMembers { get; set; } = 8;
+        public double HomesteadClaimCost { get; set; } = 50.0;
+
+        // --- v0.7: NPC appearance follows the invoker player (data-layer copy) ---
+        public bool AppearanceSyncEnabled { get; set; } = true;
+
+        // --- v0.7: real player <-> NPC commerce (native currency, simulated goods) ---
+        public bool PlayerTradeEnabled { get; set; } = true;
+
         // --- simulation limits ---
         public int MaxCitizens { get; set; } = 50;
         public bool BroadcastDailyReport { get; set; } = true;
@@ -213,6 +224,11 @@ namespace EcoSimCitizens
             PoolLimit = other.PoolLimit;
             NpcMinSpacing = other.NpcMinSpacing;
             NpcSpawnRadius = other.NpcSpawnRadius;
+            HomesteadEnabled = other.HomesteadEnabled;
+            HomesteadMaxMembers = other.HomesteadMaxMembers;
+            HomesteadClaimCost = other.HomesteadClaimCost;
+            AppearanceSyncEnabled = other.AppearanceSyncEnabled;
+            PlayerTradeEnabled = other.PlayerTradeEnabled;
             MaxCitizens = other.MaxCitizens;
             BroadcastDailyReport = other.BroadcastDailyReport;
         }

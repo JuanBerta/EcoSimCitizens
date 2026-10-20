@@ -102,6 +102,17 @@ namespace EcoSimCitizens
         // deterministic appearance seed for NPC spawning (Module 1)
         public int AppearanceSeed { get; set; } = 1234;
 
+        // --- v0.7: homestead/deed membership (mod-internal group) ---
+        public string HomesteadName { get; set; }
+
+        // --- v0.7: NPC appearance mirrors the invoker player (data-layer copy) ---
+        public string AppearanceUmaDefinition { get; set; }
+        public string AppearanceGender { get; set; }
+        public string AppearanceSourcePlayer { get; set; }
+
+        // --- v0.7: real player <-> NPC trade volume (native currency) ---
+        public double RealTradeVolume { get; set; }
+
         public bool HasHome => !string.IsNullOrEmpty(HomeDeedName);
         public bool HasWorkplace => !string.IsNullOrEmpty(WorkPlaceName) || WorkX != 0 || WorkY != 0 || WorkZ != 0;
         public bool IsAlive => DeathDay == 0;

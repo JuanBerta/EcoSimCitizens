@@ -77,6 +77,12 @@ namespace EcoSimCitizens
                 // keeps its open space. See StationOffsets.
                 EnsureStation(npc, typeof(WorkbenchObject), creator, campPos, 5.0f, "Workbench");
                 EnsureStation(npc, typeof(ToolBenchObject), creator, campPos, 7.0f, "ToolBench");
+                // Campfire cooking: an open campfire 4m from the camp plus a
+                // stockpile with fuel and ready campfire food (Charred Meat), so the
+                // citizen can cook/eat campfire food at its own camp.
+                EnsureStation(npc, typeof(CampfireObject), creator, campPos, 4.0f, "Campfire");
+                EnsureStation(npc, typeof(StockpileObject), creator, campPos, 9.0f, "Stockpile");
+                EnsureCampfireSupplies(npc, campPos, creator);
             }
             catch (Exception ex)
             {
@@ -167,6 +173,32 @@ namespace EcoSimCitizens
             TryPlace(npc, objectType, creator, campPos, offset, label, false);
         }
 
+        /// <summary>
+        /// Stockpile supplies for campfire cooking: fuel (Birch Log) so the campfire
+        /// can be lit, plus ready campfire food (Charred Meat) so the citizen always
+        /// has campfire food at hand. Idempotent - only fills missing quantities.
+        /// </summary>
+        private static void EnsureCampfireSupplies(CitizenNpc npc, Vector3 campPos, User creator)
+        {
+            try
+            {
+                var stockpile = FindNearby(typeof(StockpileObject), campPos, StationRadius) as StockpileObject;
+                if (stockpile == null) return;
+                var inv = stockpile.GetComponent<StorageComponent>()?.Inventory;
+                if (inv == null) return;
+
+                int added = 0;
+                added += EnsureItems(inv, typeof(BirchLogItem), 2, creator);
+                added += EnsureItems(inv, typeof(CharredMeatItem), 2, creator);
+                if (added > 0)
+                    PluginLog.Info($"{npc.CitizenName}: campfire stockpile supplied ({added} item added)");
+            }
+            catch (Exception ex)
+            {
+                PluginLog.Warn($"{npc.CitizenName}: EnsureCampfireSupplies failed: {ex.Message}");
+            }
+        }
+
         // ------------------------------------------------------------- helpers
 
         /// <summary>
@@ -211,7 +243,9 @@ namespace EcoSimCitizens
 
         /// <summary>
         /// Places a world object near the NPC (camp on the NPC, stations offset from
-        /// the camp). validatePlacement=false mirrors the NPC spawn path; up to 3
+        /// the camp). Every candidate is first snapped to the terrain surface so
+        /// placed objects never float in the air (the NPC/base Y can be far above
+        /// the ground). validatePlacement=false mirrors the NPC spawn path; up to 3
         /// candidate offsets are tried before giving up.
         /// </summary>
         private static WorldObject TryPlace(CitizenNpc npc, Type objectType, User creator, Vector3 center, float offset, string label, bool allowCenter = false)
@@ -221,11 +255,12 @@ namespace EcoSimCitizens
             {
                 try
                 {
+                    Vector3 placePos = GroundSampler.SnapToGround(center + candidate);
                     WorldObject created = null;
                     WorldObjectManager.ForceAdd(
                         objectType,
                         creator,
-                        center + candidate,
+                        placePos,
                         Quaternion.Identity,
                         false,
                         null,

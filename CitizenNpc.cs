@@ -46,6 +46,12 @@ namespace EcoSimCitizens
         [Serialized] public float GoalZ;
         [Serialized] public bool LastMoveFailed;
 
+        // --- v0.7: appearance mirrors the invoker player (data-layer copy, the
+        // vanilla mannequin prefab stays visible - no Avatar swap on the WorldObject) ---
+        [Serialized] public string AppearanceUmaDefinition;
+        [Serialized] public string AppearanceGender;
+        [Serialized] public string AppearanceSourcePlayer;
+
         private readonly Random _rng = new Random();
 
         public CitizenNpc()
@@ -97,6 +103,60 @@ namespace EcoSimCitizens
             // v0.5 persistence: anchor the citizen to this world object's ID so a
             // server restart can three-way reconcile citizens.json vs world NPCs.
             try { citizen.NpcId = ID.ToString(); } catch { }
+            // v0.7: copy the citizen's persisted appearance data onto the NPC.
+            ApplyAppearance(citizen);
+        }
+
+        /// <summary>
+        /// Copies appearance data from the citizen record onto this NPC. The NPC
+        /// keeps its vanilla mannequin prefab (visibility chain untouched); the
+        /// appearance is stored as serialized data on the WorldObject so it can be
+        /// read/displayed by commands and reports.
+        /// </summary>
+        public void ApplyAppearance(Citizen c)
+        {
+            if (c == null) return;
+            AppearanceUmaDefinition = c.AppearanceUmaDefinition;
+            AppearanceGender = c.AppearanceGender;
+            AppearanceSourcePlayer = c.AppearanceSourcePlayer;
+        }
+
+        /// <summary>
+        /// Copies the invoker player's avatar (UmaDefinition + Gender) onto the
+        /// NPC and back onto the citizen record. Uses only server-readable
+        /// User.Avatar data; the NPC stays a WorldObject and never gains a User.
+        /// </summary>
+        public void ApplyAppearanceFrom(User invoker, Citizen c = null)
+        {
+            if (invoker == null || invoker.Avatar == null) return;
+            try
+            {
+                string def = invoker.Avatar.UmaDefinition;
+                string gender = invoker.Avatar.Gender.ToString();
+                AppearanceUmaDefinition = def;
+                AppearanceGender = gender;
+                AppearanceSourcePlayer = invoker.Name;
+                if (c != null)
+                {
+                    c.AppearanceUmaDefinition = def;
+                    c.AppearanceGender = gender;
+                    c.AppearanceSourcePlayer = invoker.Name;
+                }
+            }
+            catch (Exception ex)
+            {
+                PluginLog.Warn("CitizenNpc.ApplyAppearanceFrom failed: " + ex.Message);
+            }
+        }
+
+        /// <summary>Readable appearance summary for commands/reports.</summary>
+        public string AppearanceSummary
+        {
+            get
+            {
+                if (string.IsNullOrEmpty(AppearanceSourcePlayer)) return "default mannequin";
+                return $"mirrors '{AppearanceSourcePlayer}' (gender {AppearanceGender}, uma {(!string.IsNullOrEmpty(AppearanceUmaDefinition) ? "set" : "none")})";
+            }
         }
 
         /// <summary>Visual name: name + life-stage suffix + profession tag.</summary>

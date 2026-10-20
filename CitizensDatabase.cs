@@ -32,11 +32,13 @@ namespace EcoSimCitizens
         {
             public List<Citizen> Citizens { get; set; } = new List<Citizen>();
             public List<SimStore> SimStores { get; set; } = new List<SimStore>();
+        public List<Homestead> Homesteads { get; set; } = new List<Homestead>();
         }
 
         private readonly object _lock = new object();
         private readonly List<Citizen> _citizens = new List<Citizen>();
         private readonly List<SimStore> _simStores = new List<SimStore>();
+        private readonly List<Homestead> _homesteads = new List<Homestead>();
         private DateTime _lastSaveUtc = DateTime.MinValue;
         private bool _dirty;
 
@@ -159,6 +161,35 @@ namespace EcoSimCitizens
             }
         }
 
+        // ------------------------------------------------------------ homesteads (v0.7)
+
+        public int CountHomesteads { get { lock (_lock) { return _homesteads.Count; } } }
+
+        /// <summary>Snapshot of all homesteads (mod-internal deed groups).</summary>
+        public IEnumerable<Homestead> HomesteadsSnapshot()
+        {
+            lock (_lock) { return _homesteads.ToList(); }
+        }
+
+        /// <summary>Find a homestead by exact name (case-insensitive).</summary>
+        public Homestead FindHomestead(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return null;
+            lock (_lock) { return _homesteads.FirstOrDefault(h => string.Equals(h.Name, name, StringComparison.OrdinalIgnoreCase)); }
+        }
+
+        /// <summary>Add or replace a homestead record, then mark dirty.</summary>
+        public void AddHomestead(Homestead h)
+        {
+            if (h == null) return;
+            lock (_lock)
+            {
+                _homesteads.RemoveAll(x => string.Equals(x.Name, h.Name, StringComparison.OrdinalIgnoreCase));
+                _homesteads.Add(h);
+                _dirty = true;
+            }
+        }
+
         // ------------------------------------------------------------ persistence
 
         /// <summary>
@@ -195,6 +226,7 @@ namespace EcoSimCitizens
                     {
                         Citizens = new List<Citizen>(_citizens),
                         SimStores = new List<SimStore>(_simStores),
+                        Homesteads = new List<Homestead>(_homesteads),
                     });
                     _lastSaveUtc = DateTime.UtcNow;
                     _dirty = false;
@@ -225,6 +257,7 @@ namespace EcoSimCitizens
                     {
                         Citizens = new List<Citizen>(_citizens),
                         SimStores = new List<SimStore>(_simStores),
+                        Homesteads = new List<Homestead>(_homesteads),
                     });
                     _lastSaveUtc = DateTime.UtcNow;
                     _dirty = false;
@@ -283,6 +316,8 @@ namespace EcoSimCitizens
                     _citizens.AddRange(state.Citizens ?? new List<Citizen>());
                     _simStores.Clear();
                     if (state.SimStores != null) _simStores.AddRange(state.SimStores);
+                    _homesteads.Clear();
+                    if (state.Homesteads != null) _homesteads.AddRange(state.Homesteads);
                     // stores whose owner vanished are closed, never dropped (data safety)
                     foreach (var s in _simStores)
                     {

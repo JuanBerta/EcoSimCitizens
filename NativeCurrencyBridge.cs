@@ -137,6 +137,44 @@ namespace EcoSimCitizens
             }
         }
 
+        /// <summary>
+        /// Ensures a native currency using an explicit creator User (the invoker
+        /// player). Used by homestead claims so the claim is visible in the native
+        /// currency list with the player as creator - the one native call that
+        /// takes the invoker's User directly.
+        /// </summary>
+        public static Currency EnsureCurrencyWithCreator(string name, User creator)
+        {
+            if (string.IsNullOrEmpty(name) || creator == null) return null;
+            lock (Sync)
+            {
+                if (Registered.TryGetValue(name, out var cur) && cur != null) return cur;
+                var c = TryCreateWithCreator(name, creator);
+                if (c != null) Registered[name] = c;
+                return c;
+            }
+        }
+
+        private static Currency TryCreateWithCreator(string name, User creator)
+        {
+            try
+            {
+                var existing = CurrencyManager.GetClosestCurrency(name);
+                if (existing != null) return existing;
+                var created = CurrencyManager.AddCurrency(creator, name, CurrencyType.Backed);
+                if (created != null)
+                {
+                    PluginLog.Info($"EcoSimCitizens: native currency '{created.Name}' registered with invoker '{creator.Name}' as creator.");
+                }
+                return created;
+            }
+            catch (Exception ex)
+            {
+                PluginLog.Warn($"EcoSimCitizens: currency creation for '{name}' with invoker failed: {ex.Message}");
+                return null;
+            }
+        }
+
         /// <summary>First available user that can act as creator for currency registration.</summary>
         public static User FirstUser()
         {

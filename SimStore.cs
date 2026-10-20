@@ -25,6 +25,8 @@ namespace EcoSimCitizens
         public double TotalSales { get; set; }         // lifetime unit sales
         public double TotalRevenue { get; set; }       // lifetime revenue
         public double TradesSettled { get; set; }      // lifetime settled NPC trades
+        public double PlayerSales { get; set; }        // v0.7: player-purchased units (real native currency)
+        public double PlayerRevenue { get; set; }      // v0.7: player-paid revenue (real native currency)
         public double FoundedDay { get; set; }         // game day it opened
         public int Level { get; set; }                 // shop upgrade level (1..3)
         public float X { get; set; }

@@ -103,6 +103,14 @@ namespace EcoSimCitizens
                 SimStoreManager.TickShops(db, cfg, market);
             }
 
+            // --- v0.7 homestead/deed concept: group homeless citizens into
+            // persisted homesteads (NPCs cannot hold real property; the groups are
+            // the mod-internal deed/homestead view) ---
+            if (cfg.HomesteadEnabled)
+            {
+                HomesteadSystem.TickHomesteads(db, cfg);
+            }
+
             // --- world-level systems (after citizen work feeds industry) ---
             if (cfg.EnvironmentEnabled)
             {

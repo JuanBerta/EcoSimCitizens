@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
 using System.Text;
@@ -61,6 +62,11 @@ namespace EcoSimCitizens
             sb.AppendLine("  /npccmd research status");
             sb.AppendLine("  /npccmd env get | set <pollution> <co2> <soil> | cleanup <amount> | meteor <power> <resources> | impact <day>");
             sb.AppendLine("  /npccmd dialogue <citizen>");
+            sb.AppendLine("  /npccmd homestead [list|info <name>|claim <name>] - v0.7 homestead/deed groups; claim uses YOUR User as invoker");
+            sb.AppendLine("  /npccmd shop              - list open NPC shops (player-visible commerce)");
+            sb.AppendLine("  /npccmd shopbuy <id|owner> <qty> - buy from an NPC shop with REAL native currency");
+            sb.AppendLine("  /npccmd shopsell <citizen> <item> <qty> <price> - sell to an NPC, REAL native currency");
+            sb.AppendLine("  /npccmd look <citizen>   - copy YOUR appearance onto an NPC (data-layer)");
             ReplyOk(user, sb.ToString());
         }
 
@@ -540,6 +546,91 @@ namespace EcoSimCitizens
             var c = Plugin.Database.Find(name);
             if (c == null) { ReplyError(user, "Citizen not found."); return; }
             ReplyOk(user, DialogueTree.RecentLines(c));
+        }
+
+        // ------------------------------------------------- homestead / deed (v0.7)
+
+        /// <summary>
+        /// Homestead/deed concept commands. Homesteads are mod-internal deed-like
+        /// groups of citizens (NPCs cannot hold real Eco property). "claim" uses the
+        /// invoker player's User for the one native call that needs a User (native
+        /// deed-currency registration); the claim itself is recorded mod-side.
+        /// </summary>
+        [ChatSubCommand("npccmd", "Homestead/deed groups: list, info or claim (claim uses YOUR User as invoker)", "homestead", ChatAuthorizationLevel.User)]
+        public static void Homestead(User user, string action, string name = "")
+        {
+            var db = Plugin.Database;
+            var cfg = ModConfig.Instance;
+            if (!cfg.HomesteadEnabled) { ReplyError(user, "Homestead system is disabled in config."); return; }
+            if (string.IsNullOrEmpty(action) || action.Equals("list", StringComparison.OrdinalIgnoreCase))
+            {
+                var hs = db.HomesteadsSnapshot().OrderBy(h => h.Name).ToList();
+                if (hs.Count == 0) { ReplyOk(user, "No homesteads yet - citizens are grouped automatically each simulation tick."); return; }
+                var sb = new StringBuilder();
+                sb.AppendLine($"Homesteads ({hs.Count}):");
+                foreach (var h in hs)
+                {
+                    sb.AppendLine($"  {h.Name} | owner {h.OwnerName} | {h.MemberCount} members | settlement {(h.IsWilderness ? "wilderness" : h.SettlementName)} | level {h.Level} | claimed {(h.IsClaimed ? "by " + h.ClaimedByPlayer : "no")}");
+                }
+                ReplyOk(user, sb.ToString());
+                return;
+            }
+            if (action.Equals("info", StringComparison.OrdinalIgnoreCase))
+            {
+                var h = db.FindHomestead(name);
+                if (h == null) { ReplyError(user, $"No homestead named '{name}'. Use /npccmd homestead list."); return; }
+                var sb = new StringBuilder();
+                sb.AppendLine($"== {h.Name} ==");
+                sb.AppendLine($"Owner: {h.OwnerName} | Settlement: {(h.IsWilderness ? "wilderness" : h.SettlementName)} | Level {h.Level} | founded day {h.FoundedDay:0.0}");
+                sb.AppendLine($"Claimed: {(h.IsClaimed ? $"YES by '{h.ClaimedByPlayer}' (native deed fund {h.NativeDeedFund:0.0})" : "NO - /npccmd homestead claim <name>")}");
+                sb.AppendLine($"Members ({h.MemberCount}): {string.Join(", ", h.MemberNames ?? new List<string>())}");
+                ReplyOk(user, sb.ToString());
+                return;
+            }
+            if (action.Equals("claim", StringComparison.OrdinalIgnoreCase))
+            {
+                var h = HomesteadSystem.ClaimForInvoker(db, cfg, name, user);
+                if (h == null) { ReplyError(user, "Claim failed. Check the homestead name with /npccmd homestead list."); return; }
+                ReplyOk(user, $"Homestead '{h.Name}' claimed. Your User '{user?.Name ?? "?"}' was used as the invoker for the native deed-currency registration; the claim itself is recorded mod-side (NPCs cannot hold real property).");
+                return;
+            }
+            ReplyError(user, "Unknown action. Use list|info <name>|claim <name>.");
+        }
+
+        // ------------------------------------------------- player commerce (v0.7)
+
+        [ChatSubCommand("npccmd", "List open NPC shops (player-visible commerce)", "shop", ChatAuthorizationLevel.User)]
+        public static void Shop(User user)
+        {
+            if (!ModConfig.Instance.PlayerTradeEnabled) { ReplyError(user, "Player trade is disabled in config."); return; }
+            ReplyOk(user, PlayerCommerce.ListStores(Plugin.Database));
+        }
+
+        [ChatSubCommand("npccmd", "Buy from an NPC shop - real native currency leaves YOUR bank account", "shopbuy", ChatAuthorizationLevel.User)]
+        public static void ShopBuy(User user, string storeRef, int qty)
+        {
+            if (!ModConfig.Instance.PlayerTradeEnabled) { ReplyError(user, "Player trade is disabled in config."); return; }
+            if (qty <= 0) { ReplyError(user, "Quantity must be > 0."); return; }
+            ReplyOk(user, PlayerCommerce.PlayerBuy(Plugin.Database, ModConfig.Instance, user, storeRef, qty));
+        }
+
+        [ChatSubCommand("npccmd", "Sell goods to an NPC - real native currency arrives in YOUR bank account", "shopsell", ChatAuthorizationLevel.User)]
+        public static void ShopSell(User user, string citizen, string item, int qty, double price)
+        {
+            if (!ModConfig.Instance.PlayerTradeEnabled) { ReplyError(user, "Player trade is disabled in config."); return; }
+            if (qty <= 0 || price <= 0) { ReplyError(user, "Quantity and price must be > 0."); return; }
+            ReplyOk(user, PlayerCommerce.PlayerSellToNpc(Plugin.Database, ModConfig.Instance, user, citizen, item, qty, price));
+        }
+
+        [ChatSubCommand("npccmd", "Copy YOUR appearance onto an NPC (data-layer; NPC keeps its mannequin prefab)", "look", ChatAuthorizationLevel.Admin)]
+        public static void Look(User user, string name)
+        {
+            var npc = NpcManager.Find(name);
+            var c = Plugin.Database.Find(name);
+            if (npc == null) { ReplyError(user, $"No world NPC named '{name}'. Use /npccmd npcs to see who is spawned."); return; }
+            npc.ApplyAppearanceFrom(user, c);
+            if (c != null) Plugin.Database.Save();
+            ReplyOk(user, $"{name} now {npc.AppearanceSummary}.");
         }
     }
 }

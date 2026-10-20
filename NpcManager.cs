@@ -29,6 +29,10 @@ namespace EcoSimCitizens
         {
             try
             {
+                // Always land on the terrain surface first: NPCs must never inherit
+                // an in-air Y from the base position (world centre / tree-top).
+                pos = GroundSampler.SnapToGround(pos);
+
                 CitizenNpc created = null;
                 WorldObjectManager.ForceAdd(
                     typeof(CitizenNpc),
@@ -41,6 +45,13 @@ namespace EcoSimCitizens
                     {
                         created = wo as CitizenNpc;
                         created?.Bind(citizen, pos);
+                        // v0.7: NPC appearance follows the invoker player (the User
+                        // that caused the spawn). Data-layer copy only - the NPC
+                        // keeps its vanilla mannequin prefab and never gets a User.
+                        if (created != null && ModConfig.Instance.AppearanceSyncEnabled)
+                        {
+                            try { created.ApplyAppearanceFrom(creator, citizen); } catch { }
+                        }
                         // Starter kit + first settlement attempt (camp, workbench,
                         // tool bench). Failures are logged, never fatal to spawn.
                         SurvivalKit.GrantToNpc(created, creator);
@@ -57,8 +68,9 @@ namespace EcoSimCitizens
 
         /// <summary>
         /// Random spawn candidate around a base point: X/Z offset 5..25 m at a
-        /// random angle, Y stays at the base height. Each NPC gets its own point so
-        /// batch spawns no longer stack on a single coordinate.
+        /// random angle, then snapped to the terrain surface (Y no longer inherits
+        /// the base height, which could be in the air). Each NPC gets its own point
+        /// so batch spawns no longer stack on a single coordinate.
         /// </summary>
         public static Vector3 RandomSpawnPoint(Vector3 basePos, Random rng)
         {
@@ -66,7 +78,7 @@ namespace EcoSimCitizens
             double radius = 5.0 + rng.NextDouble() * 20.0;
             float dx = (float)(Math.Cos(angle) * radius);
             float dz = (float)(Math.Sin(angle) * radius);
-            return new Vector3(basePos.X + dx, basePos.Y, basePos.Z + dz);
+            return GroundSampler.SnapToGround(new Vector3(basePos.X + dx, basePos.Y, basePos.Z + dz));
         }
 
         /// <summary>
@@ -88,16 +100,17 @@ namespace EcoSimCitizens
         /// <summary>
         /// Uniform random point on a disc around the world centre. The sqrt radius
         /// makes the whole disc evenly covered instead of piling up near the edge;
-        /// Y keeps the base height so the object lands on a valid floor.
+        /// the point is then snapped to the terrain surface so distributed spawns
+        /// never land in the air (the world centre Y was only a placeholder).
         /// </summary>
         public static Vector3 RandomSpawnPointDistributed(Vector3 center, double radius, Random rng)
         {
             double angle = rng.NextDouble() * Math.PI * 2.0;
             double r = Math.Sqrt(rng.NextDouble()) * radius;
-            return new Vector3(
+            return GroundSampler.SnapToGround(new Vector3(
                 center.X + (float)(Math.Cos(angle) * r),
                 center.Y,
-                center.Z + (float)(Math.Sin(angle) * r));
+                center.Z + (float)(Math.Sin(angle) * r)));
         }
 
         /// <summary>
@@ -191,7 +204,8 @@ namespace EcoSimCitizens
                 foreach (var wo in wom.All.ToList())
                 {
                     if (wo == null || wo.IsDestroyed) continue;
-                    bool isAttachment = wo is StarterCampObject || wo is WorkbenchObject || wo is ToolBenchObject;
+                    bool isAttachment = wo is StarterCampObject || wo is WorkbenchObject || wo is ToolBenchObject
+                        || wo is CampfireObject || wo is StockpileObject;
                     if (!isAttachment) continue;
                     if (!npcPositions.Any(p => Vector3.Distance(p, wo.Position) <= 18f)) continue;
                     attachments++;
