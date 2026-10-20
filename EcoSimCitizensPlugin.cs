@@ -60,6 +60,7 @@ namespace EcoSimCitizens
         private CancellationTokenSource _cts;
         private Task _loopTask;
         private Task _moveTask;
+        private Task _creditHealTask;
         private volatile bool _started;
         private volatile bool _despawnAllHeld;
 
@@ -107,6 +108,7 @@ namespace EcoSimCitizens
                     _cts.Cancel();
                     try { _loopTask?.Wait(TimeSpan.FromSeconds(5)); } catch { }
                     try { _moveTask?.Wait(TimeSpan.FromSeconds(5)); } catch { }
+                    try { _creditHealTask?.Wait(TimeSpan.FromSeconds(5)); } catch { }
                 }
                 SaveAll();
                 PluginLog.Info("Shutdown complete.");
@@ -178,6 +180,12 @@ namespace EcoSimCitizens
                     try { InitializableExtension.RunIfOrWhenInitialized(WorldObjectManager.Init, ReconcileAfterWorldLoad); }
                     catch (Exception ex) { PluginLog.Warn("Reconcile registration failed: " + ex.Message); }
                     _cts = new CancellationTokenSource();
+                    // v1.1 credit-heal guard: unlike the one-shot registry heal
+                    // above, this keeps scanning during the whole WMO load window
+                    // and destroys provably credit-bad Workbench/ToolBench (dangling
+                    // BankAccount / known bad coordinates / registry hit) before
+                    // their FinishInitialize can NRE the server.
+                    _creditHealTask = CreditHealer.StartCreditHealLoop(_cts.Token);
                     _loopTask = Task.Run(() => LoopAsync(_cts.Token));
                     _moveTask = Task.Run(() => MoveLoopAsync(_cts.Token));
                     LogDebug("StartLoop: tasks launched");
