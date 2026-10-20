@@ -32,13 +32,15 @@ namespace EcoSimCitizens
         {
             public List<Citizen> Citizens { get; set; } = new List<Citizen>();
             public List<SimStore> SimStores { get; set; } = new List<SimStore>();
-        public List<Homestead> Homesteads { get; set; } = new List<Homestead>();
+            public List<Homestead> Homesteads { get; set; } = new List<Homestead>();
+            public List<PlacedObject> PlacedObjects { get; set; } = new List<PlacedObject>();
         }
 
         private readonly object _lock = new object();
         private readonly List<Citizen> _citizens = new List<Citizen>();
         private readonly List<SimStore> _simStores = new List<SimStore>();
         private readonly List<Homestead> _homesteads = new List<Homestead>();
+        private readonly List<PlacedObject> _placedObjects = new List<PlacedObject>();
         private DateTime _lastSaveUtc = DateTime.MinValue;
         private bool _dirty;
 
@@ -190,6 +192,50 @@ namespace EcoSimCitizens
             }
         }
 
+        // ------------------------------------------------------------ placed objects (v0.8)
+
+        /// <summary>Snapshot of all mod-placed NPC objects (facilities/structures).</summary>
+        public IEnumerable<PlacedObject> PlacedObjectsSnapshot()
+        {
+            lock (_lock) { return _placedObjects.ToList(); }
+        }
+
+        /// <summary>Register (or replace) a mod-placed NPC object by WorldObject ID.</summary>
+        public void RegisterPlacedObject(PlacedObject placed)
+        {
+            if (placed == null || string.IsNullOrEmpty(placed.WoId)) return;
+            lock (_lock)
+            {
+                _placedObjects.RemoveAll(p => string.Equals(p.WoId, placed.WoId, StringComparison.OrdinalIgnoreCase));
+                _placedObjects.Add(placed);
+                _dirty = true;
+            }
+        }
+
+        /// <summary>Update the stored position of a registered object (after fixfloating moves it).</summary>
+        public void UpdatePlacedObjectPosition(string woId, float x, float y, float z)
+        {
+            if (string.IsNullOrEmpty(woId)) return;
+            lock (_lock)
+            {
+                var p = _placedObjects.FirstOrDefault(q => string.Equals(q.WoId, woId, StringComparison.OrdinalIgnoreCase));
+                if (p == null) return;
+                p.X = x; p.Y = y; p.Z = z;
+                _dirty = true;
+            }
+        }
+
+        /// <summary>Remove all registered objects (used by despawnall after they are destroyed).</summary>
+        public void ClearPlacedObjects()
+        {
+            lock (_lock)
+            {
+                if (_placedObjects.Count == 0) return;
+                _placedObjects.Clear();
+                _dirty = true;
+            }
+        }
+
         // ------------------------------------------------------------ persistence
 
         /// <summary>
@@ -227,6 +273,7 @@ namespace EcoSimCitizens
                         Citizens = new List<Citizen>(_citizens),
                         SimStores = new List<SimStore>(_simStores),
                         Homesteads = new List<Homestead>(_homesteads),
+                        PlacedObjects = new List<PlacedObject>(_placedObjects),
                     });
                     _lastSaveUtc = DateTime.UtcNow;
                     _dirty = false;
@@ -258,6 +305,7 @@ namespace EcoSimCitizens
                         Citizens = new List<Citizen>(_citizens),
                         SimStores = new List<SimStore>(_simStores),
                         Homesteads = new List<Homestead>(_homesteads),
+                        PlacedObjects = new List<PlacedObject>(_placedObjects),
                     });
                     _lastSaveUtc = DateTime.UtcNow;
                     _dirty = false;
@@ -318,6 +366,8 @@ namespace EcoSimCitizens
                     if (state.SimStores != null) _simStores.AddRange(state.SimStores);
                     _homesteads.Clear();
                     if (state.Homesteads != null) _homesteads.AddRange(state.Homesteads);
+                    _placedObjects.Clear();
+                    if (state.PlacedObjects != null) _placedObjects.AddRange(state.PlacedObjects);
                     // stores whose owner vanished are closed, never dropped (data safety)
                     foreach (var s in _simStores)
                     {

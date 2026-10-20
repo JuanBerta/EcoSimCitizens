@@ -269,6 +269,32 @@ namespace EcoSimCitizens
                     if (created != null)
                     {
                         PluginLog.Info($"{npc.CitizenName}: placed {label} at {created.Position}");
+                        // v0.8: register the placed object so despawnall can clear
+                        // ALL NPC-built facilities at any distance and fixfloating
+                        // can find/correct floating ones - without touching
+                        // player-built objects.
+                        try
+                        {
+                            var db = EcoSimCitizens.Instance?.Database;
+                            if (db != null)
+                            {
+                                db.RegisterPlacedObject(new PlacedObject
+                                {
+                                    WoId = created.ID.ToString(),
+                                    TypeName = objectType.Name,
+                                    OwnerNpcName = npc.CitizenName,
+                                    IsStructure = false,
+                                    X = created.Position.X,
+                                    Y = created.Position.Y,
+                                    Z = created.Position.Z,
+                                    PlacedAtUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                                });
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            PluginLog.Warn($"SurvivalKit: register placed object failed: {ex.Message}");
+                        }
                         return created;
                     }
                 }

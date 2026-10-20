@@ -172,52 +172,149 @@ namespace EcoSimCitizens
             return false;
         }
 
-        // ------------------------------------------------------- v0.6 bulk destroy
+        // ------------------------------------------------------- v0.6 bulk destroy (v0.8 full coverage)
 
         /// <summary>
-        /// Destroys every live CitizenNpc and the mod-placed attachments (starter
-        /// camp, workbench, tool bench) that sit close to a despawned NPC. Returns
-        /// the destroyed NPC and attachment counts for a readable command result.
+        /// v0.8: destroys every live CitizenNpc plus ALL mod-placed NPC facilities
+        /// and structures, regardless of distance:
+        ///   1. every registered PlacedObject (persisted in citizens.json by
+        ///      SurvivalKit.TryPlace) is destroyed by WorldObject ID - this covers
+        ///      starter camp / workbench / tool bench / campfire / stockpile and any
+        ///      future mod-built structure, at any distance from the NPC;
+        ///   2. legacy fallback: known attachment types that were placed before the
+        ///      registry existed are still cleaned when they sit near a destroyed
+        ///      NPC (old 18 m rule) - player-built objects further away are kept.
+        /// Player-built objects are never touched. The registry is cleared so
+        /// citizens.json no longer references destroyed facilities.
         /// </summary>
-        public static (int Npcs, int Attachments) DestroyAll()
+        public static DespawnStats DestroyAll()
         {
-            int npcs = 0, attachments = 0;
+            var stats = new DespawnStats();
             try
             {
                 var wom = PluginManager.GetPlugin<WorldObjectManager>();
-                var all = wom.All.ToList();
+                var db = EcoSimCitizens.Instance?.Database;
                 var npcPositions = new List<Vector3>();
 
-                foreach (var wo in all)
+                foreach (var wo in wom.All.ToList())
                 {
                     if (wo is CitizenNpc npc && !npc.IsDestroyed)
                     {
                         npcPositions.Add(npc.Position);
-                        npcs++;
+                        stats.Npcs++;
                         try { npc.Destroy(); }
                         catch (Exception ex) { PluginLog.Warn("NpcManager.DestroyAll: NPC destroy failed: " + ex.Message); }
                     }
                 }
 
-                // attachments are independent WorldObjects placed by SurvivalKit next
-                // to the NPC (camp 8 m, stations 15 m); clean the ones near a removed NPC
+                // 1) registered mod-placed objects (any distance)
+                var registry = (db?.PlacedObjectsSnapshot() ?? new List<PlacedObject>()).ToList();
+                foreach (var rec in registry)
+                {
+                    var wo = FindByWoId(rec.WoId);
+                    if (wo != null && !wo.IsDestroyed)
+                    {
+                        try { wo.Destroy(); }
+                        catch (Exception ex) { PluginLog.Warn($"NpcManager.DestroyAll: placed object destroy failed ({rec.TypeName} {rec.WoId}): {ex.Message}"); }
+                    }
+                    if (rec.IsStructure) stats.Structures++;
+                    else stats.Facilities++;
+                }
+                if (registry.Count > 0) db?.ClearPlacedObjects();
+
+                // 2) legacy fallback: known attachment types near a removed NPC
                 foreach (var wo in wom.All.ToList())
                 {
                     if (wo == null || wo.IsDestroyed) continue;
-                    bool isAttachment = wo is StarterCampObject || wo is WorkbenchObject || wo is ToolBenchObject
-                        || wo is CampfireObject || wo is StockpileObject;
-                    if (!isAttachment) continue;
+                    if (!IsKnownAttachment(wo)) continue;
                     if (!npcPositions.Any(p => Vector3.Distance(p, wo.Position) <= 18f)) continue;
-                    attachments++;
+                    stats.LegacyAttachments++;
                     try { wo.Destroy(); }
-                    catch (Exception ex) { PluginLog.Warn("NpcManager.DestroyAll: attachment destroy failed: " + ex.Message); }
+                    catch (Exception ex) { PluginLog.Warn("NpcManager.DestroyAll: legacy attachment destroy failed: " + ex.Message); }
                 }
             }
             catch (Exception ex)
             {
                 PluginLog.Warn("NpcManager.DestroyAll failed: " + ex.Message);
             }
-            return (npcs, attachments);
+            return stats;
+        }
+
+        /// <summary>
+        /// v0.8 /npccmd fixfloating: scans NPC-relevant world objects (registered
+        /// mod-placed facilities plus the known attachment types) and moves any
+        /// that float more than <paramref name="toleranceM"/> above the terrain
+        /// surface down to ground level, reusing the GroundSampler.SnapToGround
+        /// landing pattern. The registry position is updated after a successful
+        /// move so citizens.json stays accurate.
+        /// </summary>
+        public static FixFloatStats FixFloating(float toleranceM = 1.0f)
+        {
+            var stats = new FixFloatStats();
+            try
+            {
+                var wom = PluginManager.GetPlugin<WorldObjectManager>();
+                var db = EcoSimCitizens.Instance?.Database;
+
+                // candidates: registered objects (may be custom structures) plus
+                // every live known attachment type (legacy coverage)
+                var candidates = new List<WorldObject>();
+                foreach (var wo in wom.All)
+                {
+                    if (wo == null || wo.IsDestroyed) continue;
+                    if (wo is CitizenNpc) continue; // NPCs are handled by their own logic
+                    if (IsKnownAttachment(wo) && !candidates.Contains(wo)) candidates.Add(wo);
+                }
+                foreach (var rec in (db?.PlacedObjectsSnapshot() ?? new List<PlacedObject>()).ToList())
+                {
+                    var wo = FindByWoId(rec.WoId);
+                    if (wo != null && !wo.IsDestroyed && !candidates.Contains(wo)) candidates.Add(wo);
+                }
+
+                foreach (var wo in candidates)
+                {
+                    stats.Scanned++;
+                    Vector3 ground;
+                    try { ground = GroundSampler.SnapToGround(wo.Position); }
+                    catch (Exception ex) { PluginLog.Warn($"NpcManager.FixFloating: ground sample failed for {wo}: {ex.Message}"); continue; }
+                    if (Math.Abs(wo.Position.Y - ground.Y) <= toleranceM) continue;
+                    stats.Floating++;
+                    try
+                    {
+                        wo.MoveWorldObjectTo(ground, Quaternion.Identity);
+                        stats.Moved++;
+                        db?.UpdatePlacedObjectPosition(wo.ID.ToString(), ground.X, ground.Y, ground.Z);
+                        PluginLog.Info($"NpcManager.FixFloating: moved {wo.GetType().Name} {wo.ID} from Y={wo.Position.Y:0.00} to Y={ground.Y:0.00}");
+                    }
+                    catch (Exception ex)
+                    {
+                        stats.Failed++;
+                        PluginLog.Warn($"NpcManager.FixFloating: move failed for {wo.GetType().Name} {wo.ID}: {ex.Message}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                PluginLog.Warn("NpcManager.FixFloating failed: " + ex.Message);
+            }
+            return stats;
+        }
+
+        private static bool IsKnownAttachment(WorldObject wo)
+        {
+            return wo is StarterCampObject || wo is WorkbenchObject || wo is ToolBenchObject
+                || wo is CampfireObject || wo is StockpileObject;
+        }
+
+        private static WorldObject FindByWoId(string woId)
+        {
+            if (string.IsNullOrEmpty(woId)) return null;
+            foreach (var wo in PluginManager.GetPlugin<WorldObjectManager>().All)
+            {
+                if (wo == null || wo.IsDestroyed) continue;
+                if (string.Equals(wo.ID.ToString(), woId, StringComparison.OrdinalIgnoreCase)) return wo;
+            }
+            return null;
         }
 
         public static CitizenNpc Find(string citizenName)
@@ -338,5 +435,30 @@ namespace EcoSimCitizens
             }
             return 0;
         }
+    }
+
+    /// <summary>Result of a full despawn-all sweep (v0.8).</summary>
+    public class DespawnStats
+    {
+        public int Npcs;              // CitizenNpc world objects destroyed
+        public int Facilities;        // registered mod-placed facilities destroyed
+        public int Structures;        // registered mod-placed structures (e.g. adobe house) destroyed
+        public int LegacyAttachments; // unregistered known attachments cleaned near removed NPCs
+
+        public int TotalPlaced => Facilities + Structures;
+        public override string ToString()
+            => $"NPCs={Npcs} facilities={Facilities} structures={Structures} legacyAttachments={LegacyAttachments}";
+    }
+
+    /// <summary>Result of a floating-object correction sweep (v0.8).</summary>
+    public class FixFloatStats
+    {
+        public int Scanned;   // candidate objects examined
+        public int Floating;  // objects judged to be floating above the terrain
+        public int Moved;     // objects successfully snapped back to the ground
+        public int Failed;    // move failures
+
+        public override string ToString()
+            => $"scanned={Scanned} floating={Floating} moved={Moved} failed={Failed}";
     }
 }

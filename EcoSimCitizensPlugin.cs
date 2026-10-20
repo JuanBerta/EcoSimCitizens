@@ -341,20 +341,37 @@ namespace EcoSimCitizens
         }
 
         /// <summary>
-        /// v0.6 /npccmd despawnall: destroys every mod NPC WorldObject (plus mod-placed
-        /// camp/workbench attachments near them), clears the NpcId anchors on the
-        /// citizens so no stale physical link survives, persists citizens.json and
-        /// holds automatic top-up until /npccmd respawnall (or a server restart).
-        /// Citizens remain in the database with their simulated lives intact.
+        /// v0.6 /npccmd despawnall (v0.8 full coverage): destroys every mod NPC
+        /// WorldObject plus ALL registered NPC-built facilities/structures at any
+        /// distance (workbench / tool bench / campfire / stockpile / mod structures),
+        /// clears the NpcId anchors and the placed-object registry so citizens.json
+        /// no longer references destroyed facilities, and holds automatic top-up
+        /// until /npccmd respawnall (or a server restart). Player-built objects are
+        /// untouched. Citizens remain in the database with their simulated lives intact.
         /// </summary>
-        public (int Npcs, int Attachments) DespawnAllNpcs()
+        public DespawnStats DespawnAllNpcs()
         {
             _despawnAllHeld = true;
             var stats = NpcManager.DestroyAll();
             ClearAllNpcAnchors();
             try { _database.Save(); }
             catch (Exception ex) { PluginLog.Warn("DespawnAllNpcs: save failed: " + ex.Message); }
-            LogDebug($"DespawnAll executed. npcs={stats.Npcs} attachments={stats.Attachments}");
+            LogDebug($"DespawnAll executed. {stats}");
+            return stats;
+        }
+
+        /// <summary>
+        /// v0.8 /npccmd fixfloating: scans NPC-relevant objects (registered
+        /// facilities + known attachment types) and snaps floating ones back to
+        /// the terrain surface, reusing the GroundSampler landing pattern. The
+        /// placed-object registry is kept in sync, then citizens.json is saved.
+        /// </summary>
+        public FixFloatStats FixFloatingNpcs()
+        {
+            var stats = NpcManager.FixFloating(1.0f);
+            try { _database.Save(); }
+            catch (Exception ex) { PluginLog.Warn("FixFloatingNpcs: save failed: " + ex.Message); }
+            LogDebug($"FixFloating executed. {stats}");
             return stats;
         }
 
