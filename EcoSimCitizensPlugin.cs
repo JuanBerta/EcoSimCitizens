@@ -61,6 +61,14 @@ namespace EcoSimCitizens
         private Task _loopTask;
         private Task _moveTask;
         private volatile bool _started;
+        private volatile bool _despawnAllHeld;
+
+        /// <summary>
+        /// v0.6: true while /npccmd despawnall is in effect - automatic top-up is
+        /// paused so the world stays empty until /npccmd respawnall is issued
+        /// (or the server restarts, which resets this in-memory flag).
+        /// </summary>
+        public bool DespawnAllHeld => _despawnAllHeld;
 
         public static EcoSimCitizens Instance { get; private set; }
 
@@ -295,16 +303,23 @@ namespace EcoSimCitizens
             try
             {
                 if (_simulation == null) return 0;
+                if (_despawnAllHeld) return 0; // despawn-all in effect: do not re-populate
                 var pool = _simulation.Pool;
                 var creator = UserManager.Users.FirstOrDefault(u => u != null && u.IsOnline);
                 var basePos = SafeSpawnPosition();
                 var rng = new Random();
+                // v0.6: world-wide distribution instead of spawn-point clustering.
+                // Existing NPCs are treated as obstacles so new ones keep the minimum
+                // spacing; the radius comes from the config (or is auto-detected).
+                double radius = WorldBounds.EffectiveSpawnRadius(ModConfig.Instance);
+                double minSpacing = Math.Max(1.0, ModConfig.Instance.NpcMinSpacing);
+                var placed = NpcManager.GetAll().Select(n => n.Position).ToList();
                 foreach (var c in _database.Snapshot())
                 {
                     if (pool.ActiveNpcCount >= pool.MaxActiveNpcs) break;
                     if (NpcManager.Find(c.Name) != null) continue; // already physical
                     if (!pool.CanSpawn(c.Name)) continue;
-                    var npc = NpcManager.SpawnAtRandom(c, creator, basePos, rng);
+                    var npc = NpcManager.SpawnAtDistributed(c, creator, basePos, radius, minSpacing, rng, placed);
                     if (npc == null)
                     {
                         pool.Release(c.Name); // spawn failed, free the slot for a retry
@@ -313,7 +328,7 @@ namespace EcoSimCitizens
                     spawned++;
                 }
                 if (spawned > 0)
-                    PluginLog.Info($"EcoSimCitizens: auto-spawned {spawned} NPC(s), pool {pool.ActiveNpcCount}/{pool.MaxActiveNpcs}.");
+                    PluginLog.Info($"EcoSimCitizens: auto-spawned {spawned} NPC(s), pool {pool.ActiveNpcCount}/{pool.MaxActiveNpcs} (distributed radius {radius:0.0}m, min spacing {minSpacing:0.0}m).");
                 LogDebug($"NPC top-up done. spawned={spawned} pool={pool.ActiveNpcCount}/{pool.MaxActiveNpcs}");
                 EnsureMinimapForAllNpcs(); // always run: covers existing full pool (spawned=0) and newly spawned NPCs
                 EnsureSurvivalKitForAllNpcs(); // covers persisted NPCs and re-grants missing kit pieces
@@ -323,6 +338,54 @@ namespace EcoSimCitizens
                 PluginLog.Warn("EcoSimCitizens: NPC top-up failed. " + ex.Message);
             }
             return spawned;
+        }
+
+        /// <summary>
+        /// v0.6 /npccmd despawnall: destroys every mod NPC WorldObject (plus mod-placed
+        /// camp/workbench attachments near them), clears the NpcId anchors on the
+        /// citizens so no stale physical link survives, persists citizens.json and
+        /// holds automatic top-up until /npccmd respawnall (or a server restart).
+        /// Citizens remain in the database with their simulated lives intact.
+        /// </summary>
+        public (int Npcs, int Attachments) DespawnAllNpcs()
+        {
+            _despawnAllHeld = true;
+            var stats = NpcManager.DestroyAll();
+            ClearAllNpcAnchors();
+            try { _database.Save(); }
+            catch (Exception ex) { PluginLog.Warn("DespawnAllNpcs: save failed: " + ex.Message); }
+            LogDebug($"DespawnAll executed. npcs={stats.Npcs} attachments={stats.Attachments}");
+            return stats;
+        }
+
+        /// <summary>
+        /// v0.6 /npccmd respawnall: releases the despawn-all hold and immediately
+        /// tops the world back up to the configured cap using distributed spawning.
+        /// </summary>
+        public int RespawnAllNpcs()
+        {
+            _despawnAllHeld = false;
+            int spawned = TopUpNpcs();
+            LogDebug($"RespawnAll executed. spawned={spawned}");
+            return spawned;
+        }
+
+        private void ClearAllNpcAnchors()
+        {
+            try
+            {
+                foreach (var c in _database.Snapshot())
+                {
+                    if (!string.IsNullOrEmpty(c.NpcId))
+                    {
+                        c.NpcId = null;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                PluginLog.Warn("DespawnAllNpcs: anchor clearing failed: " + ex.Message);
+            }
         }
 
         /// <summary>

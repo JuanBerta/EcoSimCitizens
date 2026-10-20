@@ -1,3 +1,14 @@
+---
+AIGC:
+    Label: "1"
+    ContentProducer: 001191440300708461136T1XGW3
+    ProduceID: 89238829fb97168b9c4195c03c152aef_7d2124f8cc3c11f1898e525400248c00
+    ReservedCode1: oVLzMN1fIjO1UqJrcTUhwfN1A7PxVEmYLG5EGhw0LPS4DkjXuf9pSdBLTdpzWcJR6ZKUB1ISo0pwDg33bmW4SecJlO2fbgOiqLNzKLw/TqA7xGJaAZLhte5xqB24Q01ZjJWDk2rtQ6usUFXJ8nQ8hxJ0xsNJxcaokByMqHDdjAO6kNWHWZYGs1E07N8=
+    ContentPropagator: 001191440300708461136T1XGW3
+    PropagateID: 89238829fb97168b9c4195c03c152aef_7d2124f8cc3c11f1898e525400248c00
+    ReservedCode2: oVLzMN1fIjO1UqJrcTUhwfN1A7PxVEmYLG5EGhw0LPS4DkjXuf9pSdBLTdpzWcJR6ZKUB1ISo0pwDg33bmW4SecJlO2fbgOiqLNzKLw/TqA7xGJaAZLhte5xqB24Q01ZjJWDk2rtQ6usUFXJ8nQ8hxJ0xsNJxcaokByMqHDdjAO6kNWHWZYGs1E07N8=
+---
+
 # EcoSim Citizens
 
 An autonomous citizen simulation mod for **Eco Global Survival (Eco 0.14)**. It populates your server with **simulated citizens** that live in the world as real NPCs, work real jobs, gather real resources, run their own economy, and react to your player-driven world — a living backdrop that keeps the server feeling populated even between player sessions.
@@ -173,3 +184,4 @@ EcoSimCitizens/
 MIT — see [LICENSE](LICENSE).
 
 *Developed with AI assistance (Marvis).*
+*（内容由AI生成，仅供参考）*

@@ -101,6 +101,10 @@ namespace EcoSimCitizens
         // --- v0.4: agent pool ---
         public int PoolLimit { get; set; } = 30;
 
+        // --- v0.6: global NPC distribution (world-wide spawn instead of spawn-point clustering) ---
+        public double NpcMinSpacing { get; set; } = 75.0;   // minimum distance between two NPCs (metres)
+        public double NpcSpawnRadius { get; set; } = -1.0;  // -1 = auto-detect from world size (fallback 350 m)
+
         // --- simulation limits ---
         public int MaxCitizens { get; set; } = 50;
         public bool BroadcastDailyReport { get; set; } = true;
@@ -207,6 +211,8 @@ namespace EcoSimCitizens
             PoliticsEnabled = other.PoliticsEnabled;
             DialogueEnabled = other.DialogueEnabled;
             PoolLimit = other.PoolLimit;
+            NpcMinSpacing = other.NpcMinSpacing;
+            NpcSpawnRadius = other.NpcSpawnRadius;
             MaxCitizens = other.MaxCitizens;
             BroadcastDailyReport = other.BroadcastDailyReport;
         }
