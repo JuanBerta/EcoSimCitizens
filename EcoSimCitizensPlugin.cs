@@ -354,18 +354,25 @@ namespace EcoSimCitizens
         }
 
         /// <summary>
-        /// v0.6 /npccmd despawnall (v0.8 full coverage): destroys every mod NPC
-        /// WorldObject plus ALL registered NPC-built facilities/structures at any
-        /// distance (workbench / tool bench / campfire / stockpile / mod structures),
-        /// clears the NpcId anchors and the placed-object registry so citizens.json
-        /// no longer references destroyed facilities, and holds automatic top-up
-        /// until /npccmd respawnall (or a server restart). Player-built objects are
-        /// untouched. Citizens remain in the database with their simulated lives intact.
+        /// v0.6 /npccmd despawnall (v0.8 full coverage, v1.2 world-wide sweep):
+        /// destroys every mod NPC WorldObject plus ALL NPC-built facilities and
+        /// structures (workbench / tool bench / campfire / stockpile / mod
+        /// structures) - registered objects at any distance, plus, when the
+        /// registry is empty, unregistered NPC-built stockpiles found anywhere by
+        /// NPC-signal heuristics (camp proximity + starter-kit stockpile contents);
+        /// ambiguous objects are kept and logged so player-built objects are never
+        /// deleted. Clears the NpcId anchors, resets the agent-pool slots (v1.2:
+        /// without this a follow-up respawnall is rejected as "cap reached" and no
+        /// NPC respawns) and persists citizens.json, then holds automatic top-up
+        /// until /npccmd respawnall (or a server restart). Citizens remain in the
+        /// database with their simulated lives intact.
         /// </summary>
         public DespawnStats DespawnAllNpcs()
         {
             _despawnAllHeld = true;
             var stats = NpcManager.DestroyAll();
+            try { _simulation?.Pool.ResetActive(); }
+            catch (Exception ex) { PluginLog.Warn("DespawnAllNpcs: pool reset failed: " + ex.Message); }
             ClearAllNpcAnchors();
             try { _database.Save(); }
             catch (Exception ex) { PluginLog.Warn("DespawnAllNpcs: save failed: " + ex.Message); }
@@ -374,9 +381,10 @@ namespace EcoSimCitizens
         }
 
         /// <summary>
-        /// v0.8 /npccmd fixfloating: scans NPC-relevant objects (registered
-        /// facilities + known attachment types) and snaps floating ones back to
-        /// the terrain surface, reusing the GroundSampler landing pattern. The
+        /// v0.8 /npccmd fixfloating (v1.2 direction-aware): scans NPC-relevant
+        /// objects (registered facilities + known attachment types) and snaps
+        /// floating ones DOWN to the first solid support below (buried objects are
+        /// surfaced instead), reusing the GroundSampler landing pattern. The
         /// placed-object registry is kept in sync, then citizens.json is saved.
         /// </summary>
         public FixFloatStats FixFloatingNpcs()
@@ -389,8 +397,12 @@ namespace EcoSimCitizens
         }
 
         /// <summary>
-        /// v0.6 /npccmd respawnall: releases the despawn-all hold and immediately
-        /// tops the world back up to the configured cap using distributed spawning.
+        /// v0.6 /npccmd respawnall (v1.2 fixed): releases the despawn-all hold and
+        /// immediately tops the world back up to the configured cap using
+        /// distributed spawning. Works after /despawnall because the pool slots
+        /// were cleared (ResetActive), so CanSpawn no longer rejects every citizen
+        /// with "cap reached"; NPC WorldObjects destroyed by despawnall are
+        /// re-created with fresh NpcId anchors (persisted on the next save).
         /// </summary>
         public int RespawnAllNpcs()
         {

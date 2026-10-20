@@ -4,6 +4,8 @@ using System.Linq;
 using System.Numerics;
 using System.Reflection;
 using Eco.Core;
+using Eco.Gameplay.Components.Storage;
+using Eco.Gameplay.Items;
 using Eco.Gameplay.Objects;
 using Eco.Gameplay.Players;
 using Eco.Mods.TechTree;
@@ -183,9 +185,16 @@ namespace EcoSimCitizens
         ///      future mod-built structure, at any distance from the NPC;
         ///   2. legacy fallback: known attachment types that were placed before the
         ///      registry existed are still cleaned when they sit near a destroyed
-        ///      NPC (old 18 m rule) - player-built objects further away are kept.
-        /// Player-built objects are never touched. The registry is cleared so
-        /// citizens.json no longer references destroyed facilities.
+        ///      NPC (old 18 m rule) - player-built objects further away are kept;
+        ///   3. v1.2 world-wide sweep: when the registry is empty (worlds that ran
+        ///      the broken v1.1 despawn/respawn chain) NPC-built Stockpiles are
+        ///      still recognised anywhere via two independent signals - proximity
+        ///      to a destroyed NPC's last known position (20 m camp radius) and the
+        ///      NPC starter-kit items stored inside the stockpile. Objects that
+        ///      cannot be attributed to an NPC (ambiguous) are NEVER deleted and
+        ///      are logged instead, so player-built objects are never touched.
+        /// The registry is cleared so citizens.json no longer references destroyed
+        /// facilities.
         /// </summary>
         public static DespawnStats DestroyAll()
         {
@@ -232,12 +241,69 @@ namespace EcoSimCitizens
                     try { wo.Destroy(); }
                     catch (Exception ex) { PluginLog.Warn("NpcManager.DestroyAll: legacy attachment destroy failed: " + ex.Message); }
                 }
+
+                // 3) v1.2 world-wide sweep for NPC-built facilities when the
+                //    registry does not cover them (empty registry after the v1.1
+                //    broken despawn/respawn chain). Never delete when the
+                //    attribution is ambiguous - log and keep.
+                var registryIds = new HashSet<string>(registry.Select(r => r.WoId), StringComparer.OrdinalIgnoreCase);
+                foreach (var wo in wom.All.ToList())
+                {
+                    if (wo == null || wo.IsDestroyed) continue;
+                    if (wo is CitizenNpc) continue;
+                    if (!IsKnownAttachment(wo)) continue;
+                    if (registryIds.Contains(wo.ID.ToString())) continue; // already handled above
+                    bool nearNpc = npcPositions.Any(p => Vector3.Distance(p, wo.Position) <= 20f);
+                    bool npcKitStockpile = HasNpcKitItems(wo);
+                    if (!nearNpc && !npcKitStockpile)
+                    {
+                        stats.SkippedAmbiguous++;
+                        PluginLog.Info($"NpcManager.DestroyAll: kept {wo.GetType().Name} {wo.ID} at {wo.Position} (no NPC signal - probably player-built)");
+                        continue;
+                    }
+                    stats.Facilities++;
+                    try { wo.Destroy(); }
+                    catch (Exception ex) { PluginLog.Warn($"NpcManager.DestroyAll: world-wide facility destroy failed ({wo.GetType().Name} {wo.ID}): {ex.Message}"); }
+                }
             }
             catch (Exception ex)
             {
                 PluginLog.Warn("NpcManager.DestroyAll failed: " + ex.Message);
             }
             return stats;
+        }
+
+        /// <summary>
+        /// v1.2: true when a Stockpile holds any of the NPC starter-kit items
+        /// (Claim Paper / Claim Tool / Stone Axe / Wooden Shovel / Stone Hammer /
+        /// Stone Pickaxe) that SurvivalKit.CampKit places into the citizen's own
+        /// stockpile. This is a strong NPC-ownership signal for the world-wide
+        /// despawn sweep - player stockpiles practically never contain the whole
+        /// mod kit set.
+        /// </summary>
+        private static bool HasNpcKitItems(WorldObject wo)
+        {
+            try
+            {
+                if (!(wo is StockpileObject)) return false;
+                var inv = wo.GetComponent<StorageComponent>()?.Inventory;
+                if (inv == null || inv.TypeToCount == null) return false;
+                foreach (var t in new[]
+                         {
+                             typeof(ClaimPaperItem), typeof(ClaimToolItem),
+                             typeof(StoneAxeItem), typeof(WoodenShovelItem),
+                             typeof(StoneHammerItem), typeof(StonePickaxeItem),
+                         })
+                {
+                    if (inv.TypeToCount.TryGetValue(t, out var c) && c > 0) return true;
+                }
+                return false;
+            }
+            catch (Exception ex)
+            {
+                PluginLog.Warn($"NpcManager.HasNpcKitItems failed: {ex.Message}");
+                return false;
+            }
         }
 
         /// <summary>
@@ -300,12 +366,17 @@ namespace EcoSimCitizens
         }
 
         /// <summary>
-        /// v0.8 /npccmd fixfloating: scans NPC-relevant world objects (registered
-        /// mod-placed facilities plus the known attachment types) and moves any
-        /// that float more than <paramref name="toleranceM"/> above the terrain
-        /// surface down to ground level, reusing the GroundSampler.SnapToGround
-        /// landing pattern. The registry position is updated after a successful
-        /// move so citizens.json stays accurate.
+        /// v0.8 /npccmd fixfloating (v1.2 direction-aware): scans NPC-relevant
+        /// world objects (registered mod-placed facilities plus the known
+        /// attachment types) and snaps floating ones back to the terrain surface.
+        /// v1.2 root-cause fix: the old SnapToGround followed the column's highest
+        /// block, so an object near a player roof/floor was dragged UP instead of
+        /// down - repeated /fixfloating runs therefore lifted objects forever.
+        /// SnapToGroundDown only looks below the object (first solid support
+        /// strictly under its feet), so floating objects move DOWN; buried objects
+        /// surface; a correct placement (Y == support+1.5) is left untouched and
+        /// repeated runs converge instead of climbing. The registry position is
+        /// updated after a successful move so citizens.json stays accurate.
         /// </summary>
         public static FixFloatStats FixFloating(float toleranceM = 1.0f)
         {
@@ -334,16 +405,18 @@ namespace EcoSimCitizens
                 {
                     stats.Scanned++;
                     Vector3 ground;
-                    try { ground = GroundSampler.SnapToGround(wo.Position); }
+                    try { ground = GroundSampler.SnapToGroundDown(wo.Position); }
                     catch (Exception ex) { PluginLog.Warn($"NpcManager.FixFloating: ground sample failed for {wo}: {ex.Message}"); continue; }
                     if (Math.Abs(wo.Position.Y - ground.Y) <= toleranceM) continue;
                     stats.Floating++;
+                    if (ground.Y < wo.Position.Y - toleranceM) stats.Lowered++;
+                    else stats.RaisedFromBuried++;
                     try
                     {
                         wo.MoveWorldObjectTo(ground, Quaternion.Identity);
                         stats.Moved++;
                         db?.UpdatePlacedObjectPosition(wo.ID.ToString(), ground.X, ground.Y, ground.Z);
-                        PluginLog.Info($"NpcManager.FixFloating: moved {wo.GetType().Name} {wo.ID} from Y={wo.Position.Y:0.00} to Y={ground.Y:0.00}");
+                        PluginLog.Info($"NpcManager.FixFloating: moved {wo.GetType().Name} {wo.ID} from Y={wo.Position.Y:0.00} to Y={ground.Y:0.00} ({((ground.Y < wo.Position.Y - toleranceM) ? "lowered" : "surfaced")})");
                     }
                     catch (Exception ex)
                     {
@@ -496,28 +569,31 @@ namespace EcoSimCitizens
         }
     }
 
-    /// <summary>Result of a full despawn-all sweep (v0.8).</summary>
+    /// <summary>Result of a full despawn-all sweep (v0.8, v1.2 world-wide).</summary>
     public class DespawnStats
     {
         public int Npcs;              // CitizenNpc world objects destroyed
         public int Facilities;        // registered mod-placed facilities destroyed
         public int Structures;        // registered mod-placed structures (e.g. adobe house) destroyed
         public int LegacyAttachments; // unregistered known attachments cleaned near removed NPCs
+        public int SkippedAmbiguous;  // kept objects with no reliable NPC signal (player-built safety)
 
         public int TotalPlaced => Facilities + Structures;
         public override string ToString()
-            => $"NPCs={Npcs} facilities={Facilities} structures={Structures} legacyAttachments={LegacyAttachments}";
+            => $"NPCs={Npcs} facilities={Facilities} structures={Structures} legacyAttachments={LegacyAttachments} skippedAmbiguous={SkippedAmbiguous}";
     }
 
-    /// <summary>Result of a floating-object correction sweep (v0.8).</summary>
+    /// <summary>Result of a floating-object correction sweep (v0.8, v1.2 direction-aware).</summary>
     public class FixFloatStats
     {
         public int Scanned;   // candidate objects examined
         public int Floating;  // objects judged to be floating above the terrain
+        public int Lowered;   // objects moved DOWN to the first support below (the v1.2 fix)
+        public int RaisedFromBuried; // objects surfaced from being embedded in a solid block
         public int Moved;     // objects successfully snapped back to the ground
         public int Failed;    // move failures
 
         public override string ToString()
-            => $"scanned={Scanned} floating={Floating} moved={Moved} failed={Failed}";
+            => $"scanned={Scanned} floating={Floating} lowered={Lowered} surfaced={RaisedFromBuried} moved={Moved} failed={Failed}";
     }
 }

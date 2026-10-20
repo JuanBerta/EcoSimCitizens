@@ -46,6 +46,14 @@ namespace EcoSimCitizens
 
         public void Release(string citizenName) => _active.Remove(citizenName);
 
+        /// <summary>
+        /// v1.2: clears every active NPC slot. Used by the despawn-all command
+        /// after the NPC WorldObjects are destroyed - without this the pool keeps
+        /// counting the removed citizens as active and a subsequent respawn-all
+        /// rejects every spawn with "cap reached" (the v1.1 /respawnall bug).
+        /// </summary>
+        public void ResetActive() => _active.Clear();
+
         /// <summary>Records which pathfinding branch was used this tick.</summary>
         public void NoteMove(bool physical)
         {
