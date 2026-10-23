@@ -72,6 +72,8 @@ namespace EcoSimCitizens
             sb.AppendLine("  /npccmd retire <citizen>  - v2.0: release an offline User back to the retirement pool");
             sb.AppendLine("  /npccmd storelist         - v2.0: list open real stores (StoreComponent) visible to NPCs");
             sb.AppendLine("  /npccmd balances          - v2.0: native bank balances per citizen");
+            sb.AppendLine("  /npccmd contracts         - v2.1: contract system status (real board scan + internal hauling loop)");
+            sb.AppendLine("  /npccmd production        - v2.1: NPC production & sales report (hauled goods -> sim stores -> players)");
             ReplyOk(user, sb.ToString());
         }
 

@@ -129,6 +129,19 @@ namespace EcoSimCitizens
         public double BudgetFoodReserve { get; set; } = 5.0;      // food reserve kept out of the spendable amount
         public double BudgetRentReserve { get; set; } = 0.0;      // rent reserve (reserved for a later version; 0 = unused)
 
+        // --- v2.1: contracts (real board scan + internal hauling loop) ---
+        public bool ContractSystemEnabled { get; set; } = true;      // master switch for the NPC contract system
+        public bool ContractAcceptAttempts { get; set; } = false;    // attempt limited reflection on real player hauling contracts (default OFF; NPCs never physically haul)
+        public int ContractBoardScanTicks { get; set; } = 20;        // per-citizen cadence for scanning the real contract board (read-only)
+        public double ContractFoodCoverageFactor { get; set; } = 1.2; // a contract is taken only when reward >= foodCost * factor
+        public double ContractBaseReward { get; set; } = 8.0;        // base payment for one internal hauling contract
+        public double ContractCaloriesPerUnit { get; set; } = 0.5;   // estimated calories burned per hauled unit
+        public int ContractMaxActivePerCitizen { get; set; } = 1;    // internal contracts per citizen at a time
+        public int ContractWorkTicks { get; set; } = 10;             // ticks to complete one internal hauling contract
+
+        // --- v2.1: NPC production & sales enhancement ---
+        public bool NpcProductionSalesEnabled { get; set; } = true;  // hauled goods -> own sim store -> players buy (links contracts to stores)
+
         public static string ConfigPath
         {
             get
@@ -247,6 +260,15 @@ namespace EcoSimCitizens
             EnableRealStoreTrade = other.EnableRealStoreTrade;
             BudgetFoodReserve = other.BudgetFoodReserve;
             BudgetRentReserve = other.BudgetRentReserve;
+            ContractSystemEnabled = other.ContractSystemEnabled;
+            ContractAcceptAttempts = other.ContractAcceptAttempts;
+            ContractBoardScanTicks = other.ContractBoardScanTicks;
+            ContractFoodCoverageFactor = other.ContractFoodCoverageFactor;
+            ContractBaseReward = other.ContractBaseReward;
+            ContractCaloriesPerUnit = other.ContractCaloriesPerUnit;
+            ContractMaxActivePerCitizen = other.ContractMaxActivePerCitizen;
+            ContractWorkTicks = other.ContractWorkTicks;
+            NpcProductionSalesEnabled = other.NpcProductionSalesEnabled;
         }
 
         private static readonly JsonSerializerOptions JsonOptions = new JsonSerializerOptions

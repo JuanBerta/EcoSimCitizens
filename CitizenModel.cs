@@ -31,6 +31,14 @@ namespace EcoSimCitizens
         public string OfflineUserName { get; set; }   // name of the bound offline User (null = none / ledger-only)
         public bool OfflineUserRetired { get; set; }  // binding was released back to the retirement pool
 
+        // --- v2.1: contracts & NPC production-sales ---
+        public string ContractId { get; set; }            // active contract/work id (internal hauling id, or a scanned board contract id)
+        public string ContractState { get; set; } = "Idle"; // Idle / BoardReady / BoardSkipped / Active
+        public int ContractWorkRemaining { get; set; }    // ticks left on the active contract
+        public long ContractsCompleted { get; set; }      // completed internal hauling contracts
+        public double ContractEarnings { get; set; }      // currency earned from completed contracts
+        public long HauledUnits { get; set; }             // raw goods delivered by completed hauling contracts (feed production & stores)
+
         // --- v0.3: real-player features ---
 
         // skill growth: per-profession experience and levels (simulated)

@@ -322,6 +322,16 @@ namespace EcoSimCitizens
                 CitizenProduction.SellProduced(c, db);
             }
 
+            // --- v2.1: NPC production & sales enhancement (hauled contract goods ->
+            // own SimStore -> players). Runs after the v2.0 sell/shop logic. ---
+            if (cfg.NpcProductionSalesEnabled)
+            {
+                NpcProductionSystem.TickProductionSales(c, db, cfg, market);
+            }
+
+            // --- v2.1: contracts (real board scan + internal hauling loop) ---
+            NpcContractSystem.TickContracts(c, db, cfg, market);
+
             // --- v0.4: comparative-advantage commerce (materials & calorie-value food) ---
             if (cfg.CommerceEnabled)
             {
