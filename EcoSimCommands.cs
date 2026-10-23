@@ -5,6 +5,7 @@ using System.Text;
 using Eco.Core;
 using Eco.Core.Plugins;
 using Eco.Core.Utils;
+using Eco.Gameplay.Economy;
 using Eco.Gameplay.Players;
 using Eco.Gameplay.Systems.Messaging.Chat;
 using Eco.Gameplay.Systems.Messaging.Chat.Commands;
@@ -20,7 +21,7 @@ namespace EcoSimCitizens
     ///   /ecosimulator professions     list the real in-game professions
     ///   /ecosimulator spawncitizen &lt;name&gt; &lt;profession&gt;   (admin, creates a real world NPC)
     ///   /ecosimulator removecitizen &lt;name&gt;   (admin, despawns the NPC too)
-    ///   /ecosimulator givecash &lt;name&gt; &lt;amount&gt; (admin)
+    ///   /ecosimulator givecash &lt;name&gt; &lt;amount&gt; [currency] (admin; citizen or real player)
     ///   /ecosimulator home &lt;name&gt; &lt;deed&gt;       (admin)
     ///   /ecosimulator save                   (admin)
     ///   /ecosimulator config                (admin)
@@ -160,18 +161,71 @@ namespace EcoSimCitizens
             ReplyOk(user, $"Citizen '{name}' removed (world NPC despawned).");
         }
 
-        [ChatSubCommand("ecosimulator", "Credit a citizen's ledger", "givecash", ChatAuthorizationLevel.Admin)]
-        public static void CitizenGive(User user, string name, float amount)
+        [ChatSubCommand("ecosimulator", "Credit a citizen's or player's native bank account (optional currency name)", "givecash", ChatAuthorizationLevel.Admin)]
+        public static void CitizenGive(User user, string name, float amount, string currencyName = null)
         {
-            var c = Plugin.Database.Find(name);
-            if (c == null)
+            // Resolve the currency: explicit name must exist in CurrencyManager,
+            // otherwise fall back to the default sim settlement currency.
+            Currency cur;
+            if (!string.IsNullOrWhiteSpace(currencyName))
             {
-                ReplyError(user, $"No citizen named '{name}'.");
+                cur = CurrencyManager.GetClosestCurrency(currencyName);
+                if (cur == null)
+                {
+                    ReplyError(user, $"No currency named '{currencyName}' exists.");
+                    return;
+                }
+            }
+            else
+            {
+                cur = NativeCurrencyBridge.DefaultCurrency();
+                if (cur == null)
+                {
+                    ReplyError(user, "Default sim currency is unavailable (no user to register it); specify a currency name.");
+                    return;
+                }
+            }
+
+            var cfg = ModConfig.Instance;
+            var db = Plugin.Database;
+
+            // Target is a simulated citizen (NPC): settle through its native bank
+            // account (offline citizen user when bound, legacy registrar account
+            // otherwise). When no native account exists at all, fall back to the
+            // internal ledger and warn.
+            var c = db.Find(name);
+            if (c != null)
+            {
+                var acc = CitizenEconomy.AccountFor(c, cfg);
+                if (acc != null)
+                {
+                    acc.AddCurrency(cur, amount, false);
+                    PluginLog.Info($"EcoSimCitizens: /givecash credited NPC '{name}' {amount:0.00} {cur.Name} (native account).");
+                    ReplyOk(user, $"'{name}' received {amount:0.00} {cur.Name} (NPC native account).");
+                    return;
+                }
+                c.LedgerBalance += amount;
+                db.Save();
+                PluginLog.Warn($"EcoSimCitizens: /givecash NPC '{name}' has no native account; credited ledger-only {amount:0.00} {cur.Name}.");
+                Reply(user, $"'{name}' has no native account; credited to internal ledger ({amount:0.00} {cur.Name}).", NotificationStyle.Warning);
                 return;
             }
-            c.LedgerBalance += amount;
-            Plugin.Database.Save();
-            ReplyOk(user, $"'{name}' ledger is now {c.LedgerBalance:0.00}.");
+
+            // Target is a real user: resolve by name and credit the native bank account.
+            var target = UserManager.FindUserByName(name);
+            if (target == null)
+            {
+                ReplyError(user, $"No citizen or player named '{name}'.");
+                return;
+            }
+            if (target.BankAccount == null)
+            {
+                ReplyError(user, $"User '{name}' has no bank account.");
+                return;
+            }
+            target.BankAccount.AddCurrency(cur, amount, false);
+            PluginLog.Info($"EcoSimCitizens: /givecash credited player '{name}' {amount:0.00} {cur.Name} (native account).");
+            ReplyOk(user, $"'{name}' received {amount:0.00} {cur.Name} (native player account).");
         }
 
         [ChatSubCommand("ecosimulator", "Assign a home deed to a citizen", "citizenhome", ChatAuthorizationLevel.Admin)]
