@@ -27,6 +27,9 @@ namespace EcoSimCitizens
         public int AgeInTicks { get; set; }
         public bool HasBeenFunded { get; set; }           // real bank account funded once
         public string NpcId { get; set; }                 // optional reference to the live NPC
+        // --- v2.0: controlled offline-User economic persona ---
+        public string OfflineUserName { get; set; }   // name of the bound offline User (null = none / ledger-only)
+        public bool OfflineUserRetired { get; set; }  // binding was released back to the retirement pool
 
         // --- v0.3: real-player features ---
 

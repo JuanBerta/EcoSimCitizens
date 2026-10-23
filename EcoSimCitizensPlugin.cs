@@ -179,6 +179,11 @@ namespace EcoSimCitizens
                     // reconciled anchors stop duplicate spawns.
                     try { InitializableExtension.RunIfOrWhenInitialized(WorldObjectManager.Init, ReconcileAfterWorldLoad); }
                     catch (Exception ex) { PluginLog.Warn("Reconcile registration failed: " + ex.Message); }
+                    // v2.0 controlled offline users: once the world is loaded (bank /
+                    // user subsystems are live), bind every citizen to an offline User
+                    // persona (create / reuse by prefix + retirement pool, hard-capped).
+                    try { InitializableExtension.RunIfOrWhenInitialized(WorldObjectManager.Init, EnsureAllCitizenUsersAfterWorldLoad); }
+                    catch (Exception ex) { PluginLog.Warn("Citizen-user bind registration failed: " + ex.Message); }
                     _cts = new CancellationTokenSource();
                     // v1.1 credit-heal guard: unlike the one-shot registry heal
                     // above, this keeps scanning during the whole WMO load window
@@ -515,6 +520,25 @@ namespace EcoSimCitizens
             catch (Exception ex)
             {
                 PluginLog.Warn("EcoSimCitizens: ReconcileAfterWorldLoad failed: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// v2.0: binds every citizen in citizens.json to its controlled offline
+        /// User persona after the world is loaded (bank / user subsystems live).
+        /// Idempotent: existing bindings are reused by name, retired citizens are
+        /// skipped, and the hard cap keeps the User table from growing unbounded.
+        /// </summary>
+        private void EnsureAllCitizenUsersAfterWorldLoad()
+        {
+            try
+            {
+                int bound = CitizenUserManager.EnsureAllCitizenUsers(_database, ModConfig.Instance);
+                LogDebug($"Citizen-user bind pass done ({bound} bound).");
+            }
+            catch (Exception ex)
+            {
+                PluginLog.Warn("EcoSimCitizens: EnsureAllCitizenUsersAfterWorldLoad failed: " + ex.Message);
             }
         }
 

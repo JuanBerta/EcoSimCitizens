@@ -161,7 +161,7 @@ namespace EcoSimCitizens
                     if (owner == null || !owner.IsAlive) continue;
 
                     double price = store.Price;
-                    if (!CitizenEconomy.TransferNpcFunds(c, owner, price)) continue;
+                    if (!CitizenEconomy.TransferNpcFunds(c, owner, cfg, price)) continue;
 
                     store.Stock--;
                     store.TotalSales++;

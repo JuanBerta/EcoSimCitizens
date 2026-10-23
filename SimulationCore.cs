@@ -227,7 +227,7 @@ namespace EcoSimCitizens
                 npc.BehaviorTick();
                 if (!c.HasBeenFunded)
                 {
-                    CitizenEconomy.GrantStartFunds(c.Name, (float)cfg.StartingBalance);
+                    CitizenEconomy.GrantStartFunds(c, cfg, (float)cfg.StartingBalance);
                     c.HasBeenFunded = true;
                 }
             }
@@ -336,6 +336,11 @@ namespace EcoSimCitizens
                 if (ate > 0)
                 {
                     c.Calories = SimMath.Clamp(c.Calories + ate * cfg.CalorieGainFromFood, 0, 100);
+                }
+                else if (CitizenStoreTrade.TryBuyFood(c, db, cfg, out float _))
+                {
+                    // v2.0: real-store trade via the offline User's native bank account
+                    c.Calories = SimMath.Clamp(c.Calories + cfg.CalorieGainFromFood, 0, 100);
                 }
                 else if (SimStoreManager.TryBuyFood(c, db, cfg, out float _))
                 {

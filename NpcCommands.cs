@@ -68,6 +68,10 @@ namespace EcoSimCitizens
             sb.AppendLine("  /npccmd shopbuy <id|owner> <qty> - buy from an NPC shop with REAL native currency");
             sb.AppendLine("  /npccmd shopsell <citizen> <item> <qty> <price> - sell to an NPC, REAL native currency");
             sb.AppendLine("  /npccmd look <citizen>   - copy YOUR appearance onto an NPC (data-layer)");
+            sb.AppendLine("  /npccmd users            - v2.0: offline-User bindings, native balances, pool status");
+            sb.AppendLine("  /npccmd retire <citizen>  - v2.0: release an offline User back to the retirement pool");
+            sb.AppendLine("  /npccmd storelist         - v2.0: list open real stores (StoreComponent) visible to NPCs");
+            sb.AppendLine("  /npccmd balances          - v2.0: native bank balances per citizen");
             ReplyOk(user, sb.ToString());
         }
 
@@ -658,6 +662,84 @@ namespace EcoSimCitizens
             npc.ApplyAppearanceFrom(user, c);
             if (c != null) Plugin.Database.Save();
             ReplyOk(user, $"{name} now {npc.AppearanceSummary}.");
+        }
+
+        // ------------------------------------------------- v2.0 controlled offline users
+
+        [ChatSubCommand("npccmd", "List citizen offline-User bindings, native balances and pool status (v2.0)", "users", ChatAuthorizationLevel.Admin)]
+        public static void Users(User user)
+        {
+            var cfg = ModConfig.Instance;
+            var db = Plugin.Database;
+            var sb = new StringBuilder();
+            if (!CitizenUserManager.IsEnabled(cfg))
+            {
+                sb.AppendLine("Offline citizen users are DISABLED (config EnableCitizenUsers=false) - NPCs run the v1.2 ledger simulation.");
+                ReplyOk(user, sb.ToString());
+                return;
+            }
+            sb.AppendLine($"Citizen users: {CitizenUserManager.CountCitizenUsers(cfg)}/{cfg.MaxCitizenUsers} | real-store trade: {(cfg.EnableRealStoreTrade ? "ON" : "OFF (SimStore simulation)")}");
+            foreach (var c in db.Snapshot())
+            {
+                string bind = string.IsNullOrEmpty(c.OfflineUserName) ? "-" : c.OfflineUserName;
+                string retired = c.OfflineUserRetired ? " [retired]" : "";
+                float bal = CitizenEconomy.NativeBalance(c, cfg);
+                sb.AppendLine($"  {c.Name}: user='{bind}'{retired} balance={bal:0.##}");
+            }
+            ReplyOk(user, sb.ToString());
+        }
+
+        [ChatSubCommand("npccmd", "Release a citizen's offline User back to the retirement pool (v2.0)", "retire", ChatAuthorizationLevel.Admin)]
+        public static void Retire(User user, string citizenName)
+        {
+            var c = Plugin.Database.Find(citizenName);
+            if (c == null) { ReplyError(user, $"No citizen named '{citizenName}'."); return; }
+            var retired = CitizenUserManager.RetireOfflineUser(c, ModConfig.Instance);
+            Plugin.Database.Save();
+            ReplyOk(user, retired == null
+                ? $"{c.Name} had no offline user to retire."
+                : $"Retired offline user '{retired}' back to the pool (NPC {c.Name} is now ledger-only).");
+        }
+
+        [ChatSubCommand("npccmd", "List open real stores visible to citizen users (v2.0)", "storelist", ChatAuthorizationLevel.Admin)]
+        public static void StoreList(User user)
+        {
+            if (!ModConfig.Instance.EnableRealStoreTrade)
+            {
+                ReplyOk(user, "Real-store trade is OFF (EnableRealStoreTrade=false). NPCs use SimStore simulation. Enable the option to use this command.");
+                return;
+            }
+            var sb = new StringBuilder();
+            int count = 0;
+            Eco.Gameplay.Objects.WorldObjectManager.ForEach(o =>
+            {
+                try
+                {
+                    var s = o.GetComponent<Eco.Gameplay.Components.Store.StoreComponent>();
+                    if (s == null || !o.Enabled || !s.OnOff.On || s.StoreData == null) return;
+                    int offers = s.AllOffers.Count();
+                    sb.AppendLine($"  {o.Name} [{o.GetType().Name}] - {offers} sell offers");
+                    count++;
+                }
+                catch { }
+            });
+            ReplyOk(user, count == 0
+                ? "No open real stores found (StoreComponent + OnOff.On)."
+                : $"Open real stores ({count}):" + Environment.NewLine + sb.ToString().TrimEnd());
+        }
+
+        [ChatSubCommand("npccmd", "Show native bank balances for all citizens (primary account, v2.0)", "balances", ChatAuthorizationLevel.Admin)]
+        public static void Balances(User user)
+        {
+            var cfg = ModConfig.Instance;
+            var sb = new StringBuilder();
+            sb.AppendLine("Native bank balances (primary account, registered settlement currency):");
+            foreach (var c in Plugin.Database.Snapshot())
+            {
+                float bal = CitizenEconomy.NativeBalance(c, cfg);
+                sb.AppendLine($"  {c.Name}: {bal:0.##}");
+            }
+            ReplyOk(user, sb.ToString().TrimEnd());
         }
     }
 }

@@ -120,6 +120,15 @@ namespace EcoSimCitizens
         public int MaxCitizens { get; set; } = 50;
         public bool BroadcastDailyReport { get; set; } = true;
 
+        // --- v2.0: controlled offline citizen users (native bank / store integration) ---
+        public bool EnableCitizenUsers { get; set; } = true;      // master switch: offline User persona for each NPC
+        public string UserPrefix { get; set; } = "Citizen";       // recognizable name prefix (also used to scan the retirement pool)
+        public int MaxCitizenUsers { get; set; } = 50;            // hard cap against User table inflation
+        public bool MarkAbandonedCitizenUsers { get; set; } = true; // register retired users in the Abandoned demographic
+        public bool EnableRealStoreTrade { get; set; } = true;    // real StoreComponent.PerformTrade; false = SimStore simulation (rollback)
+        public double BudgetFoodReserve { get; set; } = 5.0;      // food reserve kept out of the spendable amount
+        public double BudgetRentReserve { get; set; } = 0.0;      // rent reserve (reserved for a later version; 0 = unused)
+
         public static string ConfigPath
         {
             get
@@ -231,6 +240,13 @@ namespace EcoSimCitizens
             PlayerTradeEnabled = other.PlayerTradeEnabled;
             MaxCitizens = other.MaxCitizens;
             BroadcastDailyReport = other.BroadcastDailyReport;
+            EnableCitizenUsers = other.EnableCitizenUsers;
+            UserPrefix = other.UserPrefix ?? "Citizen";
+            MaxCitizenUsers = other.MaxCitizenUsers;
+            MarkAbandonedCitizenUsers = other.MarkAbandonedCitizenUsers;
+            EnableRealStoreTrade = other.EnableRealStoreTrade;
+            BudgetFoodReserve = other.BudgetFoodReserve;
+            BudgetRentReserve = other.BudgetRentReserve;
         }
 
         private static readonly JsonSerializerOptions JsonOptions = new JsonSerializerOptions

@@ -1,38 +1,47 @@
 using System;
-using System.Collections.Generic;
 using Eco.Gameplay.Economy;
 using Eco.Shared.Services;
 
 namespace EcoSimCitizens
 {
     /// <summary>
-    /// NPC money layer. Every citizen gets a native BankAccount registered through
-    /// BankAccountManager.Registrar (NativeCurrencyBridge.NpcAccount) and trades
-    /// settle mod-internally: money moves from buyer's account to seller's account
-    /// with AddCurrency on both sides - never StoreComponent.PerformTrade, never
+    /// NPC money layer. Every citizen gets a native BankAccount and trades settle
+    /// mod-internally: money moves from buyer's account to seller's account with
+    /// AddCurrency on both sides - never StoreComponent.PerformTrade, never
     /// real stores. Grants use the registered settlement currency so the currency
     /// appears in the game's native currency list.
     ///
-    /// When no native currency/account can be registered (e.g. server with no
-    /// users), operations degrade to ledger-only simulation so NPCs still function.
+    /// v2.0 dual-carrier: when controlled offline citizen users are enabled, the
+    /// "primary" account is the offline User's own native BankAccount (created via
+    /// BankAccountManager.TryCreateUserAccount so BankAccount.Owner is set); the
+    /// v1.2 registrar account ("EcoSim-&lt;name&gt;", no owner) becomes the fallback and
+    /// its balance is migrated once. When disabled, everything degrades to the
+    /// v1.2 ledger-only simulation (server with no users etc.).
     /// </summary>
     public static class CitizenEconomy
     {
         /// <summary>
-        /// Gets or creates the native bank account for an NPC via
-        /// BankAccountManager.Registrar. The account is registered in the banking
-        /// system (visible/enumerable); identified by "EcoSim-&lt;name&gt;".
+        /// Gets the primary native bank account for a citizen: the offline User's
+        /// account when citizen users are enabled, otherwise the legacy registrar
+        /// account. Never returns an account without its owner initialized.
         /// </summary>
-        public static BankAccount AccountFor(string citizenName)
-            => NativeCurrencyBridge.NpcAccount(citizenName);
+        public static BankAccount AccountFor(Citizen c, ModConfig cfg)
+        {
+            if (CitizenUserManager.IsEnabled(cfg) && c != null)
+            {
+                var user = CitizenUserManager.EnsureOfflineUser(c, cfg);
+                if (user != null && user.BankAccount != null) return user.BankAccount;
+            }
+            return NativeCurrencyBridge.NpcAccount(c?.Name);
+        }
 
         /// <summary>Grants the citizen its starting balance in the registered settlement currency.</summary>
-        public static void GrantStartFunds(string citizenName, float amount)
+        public static void GrantStartFunds(Citizen c, ModConfig cfg, float amount)
         {
             try
             {
                 var cur = NativeCurrencyBridge.DefaultCurrency();
-                var acc = AccountFor(citizenName);
+                var acc = AccountFor(c, cfg);
                 if (cur == null || acc == null) return;
                 acc.AddCurrency(cur, amount, false);
             }
@@ -44,11 +53,11 @@ namespace EcoSimCitizens
 
         /// <summary>
         /// NPC-to-NPC simulated settlement: moves money from buyer's account into
-        /// seller's account (both registered native accounts when available) and
+        /// seller's account (both primary native accounts when available) and
         /// mirrors the balances in the citizen ledgers. Returns false when the buyer
         /// cannot pay. Never touches a real store or StoreComponent.
         /// </summary>
-        public static bool TransferNpcFunds(Citizen from, Citizen to, double amount)
+        public static bool TransferNpcFunds(Citizen from, Citizen to, ModConfig cfg, double amount)
         {
             if (from == null || to == null || amount <= 0) return false;
             try
@@ -56,8 +65,8 @@ namespace EcoSimCitizens
                 var cur = NativeCurrencyBridge.DefaultCurrency();
                 if (cur != null)
                 {
-                    var buyer = AccountFor(from.Name);
-                    var seller = AccountFor(to.Name);
+                    var buyer = AccountFor(from, cfg);
+                    var seller = AccountFor(to, cfg);
                     if (buyer != null && seller != null)
                     {
                         float amt = (float)amount;
@@ -87,11 +96,12 @@ namespace EcoSimCitizens
             }
         }
 
-        /// <summary>Balance of an NPC account in the registered currency (0 when unavailable).</summary>
-        public static float NativeBalance(string citizenName)
+        /// <summary>Balance of the citizen's primary account in the registered currency (0 when unavailable).</summary>
+        public static float NativeBalance(Citizen c, ModConfig cfg)
         {
             var cur = NativeCurrencyBridge.DefaultCurrency();
-            return NativeCurrencyBridge.NpcBalance(citizenName, cur);
+            var acc = AccountFor(c, cfg);
+            return acc == null || cur == null ? 0f : acc.GetCurrencyHoldingVal(cur);
         }
     }
 }
